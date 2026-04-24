@@ -64,7 +64,9 @@
   1. `git tag --list` shows `repatch-1.x-baseline` pointing at the last commit of the pre-modernization `main`.
   2. Tag is pushed to origin and visible in the remote for the boss.
   3. Repo in a clean state on the baseline commit — no uncommitted changes.
-**Plans**: TBD
+**Plans**: 1 plan
+Plans:
+- [ ] 01-01-PLAN.md — Verify clean state, create annotated tag repatch-1.x-baseline, configure remote, push tag to origin
 
 ### Phase 2: P0-02 Environment Manifest
 **Goal**: Produce a written manifest of every environmental prerequisite needed to build, run, and evaluate RePatch today.
