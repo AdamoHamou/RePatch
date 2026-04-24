@@ -1,6 +1,6 @@
 # RePatch 2.0 Modernization — State
 
-**Last updated:** 2026-04-23
+**Last updated:** 2026-04-24
 
 ## Project Reference
 
@@ -12,14 +12,14 @@
 
 - **Milestone:** M1 — Build Migration Ready
 - **Phase:** Phase 1 (P0-01 Baseline Tag)
-- **Plan:** Not yet planned
-- **Status:** Ready to start
+- **Plan:** 1 plan ready (01-01-PLAN.md)
+- **Status:** Ready to execute
 - **Progress:** 0 / 31 phases complete (0%)
 - **Progress bar:** `[..............................]`
 
 ## Next Action
 
-Run `/gsd-plan-phase 1` to generate the execution plan for Phase 1 (P0-01 Baseline Tag).
+Run `/gsd-execute-phase 1` to execute Phase 1 (P0-01 Baseline Tag) — plan is ready.
 
 ## Milestone Progress
 
