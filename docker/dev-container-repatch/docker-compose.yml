@@ -1,0 +1,60 @@
+services:
+  dev-container-repatch:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dev-container-repatch
+    ports:
+      - "127.0.0.1:3000:3000" # HTTP access: https://localhost:3000/
+      - "127.0.0.1:3001:3001" # HTTPS access: https://localhost:3001/
+      - "127.0.0.1:3002:6901" # HTTPS access (direct KasmVNC, no audio): https://localhost:3002/
+    security_opt:
+      - seccomp=unconfined
+    volumes:
+      - dev_container_data_repatch:/config
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Zurich
+      - TITLE=Dev-repatch
+      - JDBC_URL=jdbc:mysql://mysql:3306/refactoring_aware_integration_repatch?useSSL=false&serverTimezone=UTC
+      - JDBC_URL_WITHOUT_DATABASE=jdbc:mysql://mysql:3306/?useSSL=false&serverTimezone=UTC
+      - JDBC_USER=root
+      - JDBC_PASSWORD=root
+      - DB_DRIVER=com.mysql.cj.jdbc.Driver
+      - DB_TYPE=mysql
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=refactoring_aware_integration_repatch
+    shm_size: "1gb"
+    depends_on:
+      - mysql
+
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+    
+    command: --default-authentication-plugin=mysql_native_password
+    volumes:
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "127.0.0.1:3308:3306" # Acess MySQL on port 3308. e.g. MySQL Workbench: mysql://testuser:testuser@localhost:3308/refactoring_aware_integration_repatch
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: phpmyadmin
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:80"
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306 
+    depends_on:
+      - mysql
+
+volumes:
+  dev_container_data_repatch:
+  mysql_data:

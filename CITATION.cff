@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use this work, please cite it as below."
+title: "Refactoring-Aware Patch Integration Across Structurally Divergent Java Forks"
+authors:
+  - family-names: Ogenrwot
+    given-names: Daniel
+    affiliation: University of Nevada, Las Vegas
+    orcid: "https://orcid.org/0000-0002-0133-8164"  
+  - family-names: Businge
+    given-names: John
+    affiliation: University of Nevada, Las Vegas
+    orcid: "https://orcid.org/0000-0003-3206-7085"  
+date-released: 2025-08-06
+version: 1.0.0
+keywords:
+  - Patch Integration
+  - Refactoring-aware Tools
+  - Software Variants
+  - Cherry-pick Failure
+  - Structural Divergence
+  - Semantic Conflict Resolution
+type: software
+repository-code: "https://github.com/unlv-evol/RePatch"  
+license: MIT
+doi: 10.5281/zenodo.16756017

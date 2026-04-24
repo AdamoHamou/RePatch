@@ -1,0 +1,36 @@
+<idea-plugin>
+    <id>ca.ualberta.cs.smr</id>
+    <name>RefactoringAwareEvaluation</name>
+    <vendor>University of Alberta</vendor>
+
+    <description>
+        Test refactoring tool to explore refactoring capabilities.
+    </description>
+
+    <!-- please see https://www.jetbrains.org/intellij/sdk/docs/basics/getting_started/plugin_compatibility.html
+         on how to target different products -->
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.java</depends>
+    <depends>com.intellij.java</depends>
+    <depends>Git4Idea</depends>
+
+<!--    <extensions defaultExtensionNs="com.intellij">-->
+<!--        <appStarter implementation="ca.ualberta.cs.smr.repatch.Evaluation"/>-->
+<!--    </extensions>-->
+
+
+    <extensions defaultExtensionNs="com.intellij">
+        <appStarter implementation="edu.unlv.cs.evol.integration.IntegrationPipeline"/>
+    </extensions>
+
+    <actions>
+<!--        <action id="RePatch" class="RePatch" text="RunRefMerge"-->
+<!--                description="RunRefMerge will run RePatch, merging the parent commits while considering the refactoring semantics" >-->
+<!--            <add-to-group group-id="ToolsMenu" anchor="first"/>-->
+<!--        </action>-->
+<!--        <action id="ca.ualberta.cs.smr.PipelineAction" class="ca.ualberta.cs.smr.integration.PipelineAction" text="RunEvaluationPipeline"-->
+<!--                description="Will run integration pipeline" >-->
+<!--            <add-to-group group-id="ToolsMenu" anchor="first"/>-->
+<!--        </action>-->
+    </actions>
+</idea-plugin>
