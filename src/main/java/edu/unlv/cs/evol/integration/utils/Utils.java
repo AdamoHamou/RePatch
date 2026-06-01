@@ -24,10 +24,16 @@ public class Utils {
 
     /*
      * Runs a command such as "cp -r ..." or "git merge-files ..."
+     *
+     * The child's stdout/stderr are redirected to the parent's streams so the
+     * ~64KB pipe buffer cannot fill while we sit in waitFor(). Without this,
+     * a single chatty cp/rm warning on a large tree (e.g. kafka's .git) is
+     * enough to wedge the pipe and deadlock the EDT in saveContent.
      */
     public static void runSystemCommand(String... commands) {
         try {
             ProcessBuilder pb = new ProcessBuilder(commands);
+            pb.inheritIO();
             Process p = pb.start();
             p.waitFor();
 
