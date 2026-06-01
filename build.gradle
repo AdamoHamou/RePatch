@@ -38,6 +38,9 @@ configurations.all {
         force 'org.eclipse.platform:org.eclipse.core.resources:3.13.900'
         force 'org.eclipse.platform:org.eclipse.equinox.common:3.14.0'
         force 'org.eclipse.platform:org.eclipse.equinox.preferences:3.8.100'
+        // github-api 1.135's POM pins commons-lang3:3.9 but its bytecode calls
+        // prependIfMissing(String, CharSequence, CharSequence...) which only exists in 3.10+.
+        force 'org.apache.commons:commons-lang3:3.12.0'
     }
 }
 
