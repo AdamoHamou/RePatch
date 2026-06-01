@@ -8,7 +8,10 @@ import edu.unlv.cs.evol.integration.utils.EvaluationUtils;
 import edu.unlv.cs.evol.integration.utils.GitUtils;
 import edu.unlv.cs.evol.integration.utils.Utils;
 import com.intellij.ide.impl.ProjectUtil;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.project.DumbService;
+import com.intellij.openapi.vcs.ProjectLevelVcsManager;
+import com.intellij.openapi.vcs.VcsDirectoryMapping;
 import com.intellij.openapi.vcs.VcsException;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
@@ -79,10 +82,7 @@ public class RePatchIntegration {
                 GitRepositoryManager repoManager = GitRepositoryManager.getInstance(project);
                 List<GitRepository> repos = repoManager.getRepositories();
                 if (repos.size() == 0) {
-                    VirtualFile virtualFile = LocalFileSystem.getInstance().findFileByPath(path + "/" + projectName + "/.git");
-                    GitRepositoryManager.getInstance(project).updateRepository(virtualFile);
-                    assert virtualFile != null;
-                    repo = repoManager.getRepositoryForFile(virtualFile);
+                    repo = registerAndGetRepository(repoManager, path, projectName);
                 } else {
                     repo = repos.get(0);
                 }
@@ -93,7 +93,11 @@ public class RePatchIntegration {
                 System.out.println("Continuing " + projectName);
                 GitRepositoryManager repoManager = GitRepositoryManager.getInstance(project);
                 List<GitRepository> repos = repoManager.getRepositories();
-                repo = repos.get(0);
+                if (repos.isEmpty()) {
+                    repo = registerAndGetRepository(repoManager, path, projectName);
+                } else {
+                    repo = repos.get(0);
+                }
             }
             System.out.println("Repository for Integration -> " + repo);
             evaluateProject(repo, proj, projectName);
@@ -102,6 +106,38 @@ public class RePatchIntegration {
 
 
         }
+    }
+
+    /*
+     * IntelliJ 2024 dropped the implicit "discover repo from .git folder" behavior of
+     * GitRepositoryManager.updateRepository. We now explicitly register the project root
+     * as a Git VCS directory mapping, then look up the repo. The mapping APIs require
+     * write-intent (EDT) but updateRepository / getRepositoryForFile assert background
+     * thread, so we split the work between EDT and a pooled thread. The mapping change
+     * is processed asynchronously by GitRepositoryManager, so we poll for the repo to
+     * appear with a generous deadline.
+     */
+    private GitRepository registerAndGetRepository(GitRepositoryManager repoManager, String basePath, String projectName) throws Exception {
+        VirtualFile projectRoot = LocalFileSystem.getInstance().findFileByPath(basePath + "/" + projectName);
+        assert projectRoot != null;
+        ProjectLevelVcsManager vcsManager = ProjectLevelVcsManager.getInstance(project);
+        List<VcsDirectoryMapping> mappings = new ArrayList<>(vcsManager.getDirectoryMappings());
+        boolean alreadyMapped = mappings.stream().anyMatch(m -> "Git".equals(m.getVcs()));
+        if (!alreadyMapped) {
+            mappings.add(new VcsDirectoryMapping(projectRoot.getPath(), "Git"));
+            vcsManager.setDirectoryMappings(mappings);
+        }
+        return ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            long deadline = System.currentTimeMillis() + 60_000;
+            GitRepository repo = null;
+            while (System.currentTimeMillis() < deadline) {
+                repoManager.updateRepository(projectRoot);
+                repo = repoManager.getRepositoryForFile(projectRoot);
+                if (repo != null) break;
+                try { Thread.sleep(250); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+            }
+            return repo;
+        }).get();
     }
 
     /*
