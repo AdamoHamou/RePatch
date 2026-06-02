@@ -11,6 +11,7 @@ import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.module.Module;
 import com.intellij.openapi.module.ModuleManager;
 import com.intellij.openapi.progress.ProgressManager;
+import com.intellij.openapi.project.DumbAwareRunnable;
 import com.intellij.openapi.project.DumbService;
 import com.intellij.openapi.project.DumbServiceImpl;
 import com.intellij.openapi.project.Project;
@@ -43,6 +44,8 @@ import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.text.SimpleDateFormat;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class Utils {
@@ -488,11 +491,11 @@ public class Utils {
         return null;
     }
 
-    public void removeRefactoringsInConflictingFile(String path, List<RefactoringObject> refactorings) {
+    public void removeRefactoringsInConflictingFile(String path, String absolutePath, List<RefactoringObject> refactorings) throws ExecutionException, InterruptedException {
         if(!path.endsWith(".java")) {
             return;
         }
-        List<Pair<Integer, Integer>> conflictingRegions = getConflictingRegions(path);
+        List<Pair<Integer, Integer>> conflictingRegions = getConflictingRegions(absolutePath);
         for(RefactoringObject refactoring : refactorings) {
             if(refactoring instanceof InlineMethodObject || refactoring instanceof ExtractMethodObject) {
                 continue;
@@ -501,11 +504,34 @@ public class Utils {
             if (!refactoring.getOriginalFilePath().equals(path)) {
                 continue;
             }
+
+            runWhenSmartWithFuture(project, () -> {
+                Utils.refreshVFS();
+                Utils.reparsePsiFiles(project);
+                Utils.dumbServiceHandler(project);
+            });
+
             setBoundaries(refactoring);
             if (!checkReplayRefactoring(refactoring, conflictingRegions)) {
                 refactorings.remove(refactoring);
             }
         }
+    }
+
+    public static CompletableFuture<Void> runWhenSmartWithFuture(Project project, Runnable task) {
+        CompletableFuture<Void> future = new CompletableFuture<>();
+
+        DumbService.getInstance(project).runWhenSmart((DumbAwareRunnable) () -> {
+            try {
+                System.out.println("Indexing completed. Executing task...");
+                task.run();
+                future.complete(null);
+            } catch (Exception e) {
+                future.completeExceptionally(e);
+            }
+        });
+
+        return future;
     }
 
     private List<Pair<Integer, Integer>> getConflictingRegions(String path) {

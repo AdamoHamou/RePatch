@@ -173,8 +173,12 @@ public class RePatch extends AnAction {
             List<String> conflictingFilePaths = gitUtils.getConflictingFilePaths();
             for(String conflictingFilePath : conflictingFilePaths) {
                 Utils utils = new Utils(project);
-                utils.removeRefactoringsInConflictingFile(conflictingFilePath, refactorings);
-
+                String absoluteConflictingFilePath = project.getBasePath() + "/" + conflictingFilePath;
+                try {
+                    utils.removeRefactoringsInConflictingFile(conflictingFilePath, absoluteConflictingFilePath, refactorings);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
             }
         }
 
