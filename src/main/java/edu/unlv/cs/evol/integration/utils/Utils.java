@@ -1,7 +1,6 @@
 package edu.unlv.cs.evol.integration.utils;
 
 import com.intellij.openapi.project.DumbService;
-import com.intellij.openapi.project.DumbServiceImpl;
 import com.intellij.openapi.project.Project;
 import com.intellij.psi.*;
 import java.io.*;
@@ -109,9 +108,8 @@ public class Utils {
 
     public static void dumbServiceHandler(Project project) {
         if(DumbService.isDumb(project)) {
-            DumbServiceImpl dumbService = DumbServiceImpl.getInstance(project);
-            // Waits for the task to finish
-            dumbService.completeJustSubmittedTasks();
+            // 2024.x exposes completeJustSubmittedTasks on the public DumbService base.
+            DumbService.getInstance(project).completeJustSubmittedTasks();
         }
     }
 
