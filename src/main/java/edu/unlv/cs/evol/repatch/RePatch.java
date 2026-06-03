@@ -2,6 +2,9 @@ package edu.unlv.cs.evol.repatch;
 
 import edu.unlv.cs.evol.repatch.invertOperations.InvertRefactorings;
 import edu.unlv.cs.evol.repatch.matrix.Matrix;
+import edu.unlv.cs.evol.repatch.platform.IntelliJ2024PlatformFacade;
+import edu.unlv.cs.evol.repatch.platform.PlatformFacade;
+import edu.unlv.cs.evol.repatch.platform.VfsSyncService;
 import edu.unlv.cs.evol.repatch.replayOperations.ReplayRefactorings;
 import edu.unlv.cs.evol.repatch.utils.RefactoringObjectUtils;
 import edu.unlv.cs.evol.repatch.refactoringObjects.RefactoringObject;
@@ -35,6 +38,15 @@ public class RePatch extends AnAction {
 
     Git git;
     Project project;
+    private final VfsSyncService vfs;
+
+    public RePatch() {
+        this(new IntelliJ2024PlatformFacade());
+    }
+
+    public RePatch(PlatformFacade platform) {
+        this.vfs = new VfsSyncService(platform);
+    }
 
 
 
@@ -129,17 +141,14 @@ public class RePatch extends AnAction {
 
         gitUtils.checkout(rightCommit);
         // Update the PSI classes after the commit
-        Utils.reparsePsiFiles(project);
-        Utils.dumbServiceHandler(project);
+        vfs.commitAndReparse(project);
         System.out.println("Inverting right refactorings");
         int failedRefactorings = InvertRefactorings.invertRefactorings(rightRefs, project);
-        Utils.reparsePsiFiles(project);
-        Utils.dumbServiceHandler(project);
+        vfs.commitAndReparse(project);
         String rightUndoCommit = gitUtils.addAndCommit();
         gitUtils.checkout(leftCommit);
         // Update the PSI classes after the commit
-        Utils.reparsePsiFiles(project);
-        Utils.dumbServiceHandler(project);
+        vfs.commitAndReparse(project);
         System.out.println("Inverting left refactorings");
         failedRefactorings += InvertRefactorings.invertRefactorings(leftRefs, project);
 
@@ -151,9 +160,7 @@ public class RePatch extends AnAction {
         // boolean isConflicting = gitUtils.merge(rightUndoCommit);
         boolean isConflicting = gitUtils.cherryPick(rightUndoCommit);
 
-        Utils.refreshVFS();
-        Utils.reparsePsiFiles(project);
-        Utils.dumbServiceHandler(project);
+        vfs.synchronize(project);
 
         // Check if any of the refactorings are conflicting or have ordering dependencies
         System.out.println("Detecting refactoring conflicts");

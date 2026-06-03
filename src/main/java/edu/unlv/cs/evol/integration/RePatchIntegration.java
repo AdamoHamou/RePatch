@@ -9,6 +9,7 @@ import edu.unlv.cs.evol.integration.utils.GitUtils;
 import edu.unlv.cs.evol.integration.utils.Utils;
 import edu.unlv.cs.evol.repatch.platform.IntelliJ2024PlatformFacade;
 import edu.unlv.cs.evol.repatch.platform.PlatformFacade;
+import edu.unlv.cs.evol.repatch.platform.VfsSyncService;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.project.DumbService;
 import com.intellij.openapi.vcs.ProjectLevelVcsManager;
@@ -46,6 +47,7 @@ public class RePatchIntegration {
     private com.intellij.openapi.project.Project project;
     private String remoteRepoName;
     private final PlatformFacade platform;
+    private final VfsSyncService vfs;
 
     public RePatchIntegration() {
         this(new IntelliJ2024PlatformFacade());
@@ -54,6 +56,7 @@ public class RePatchIntegration {
     public RePatchIntegration(PlatformFacade platform) {
         this.project = null;
         this.platform = platform;
+        this.vfs = new VfsSyncService(platform);
     }
 
     /*
@@ -303,8 +306,7 @@ public class RePatchIntegration {
         }
 
         gitUtils.checkout(rightParent);
-        Utils.reparsePsiFiles(project);
-        Utils.dumbServiceHandler(project);
+        vfs.commitAndReparse(project);
 
 
         gitUtils.checkout(leftParent);

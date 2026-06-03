@@ -1,5 +1,7 @@
 package edu.unlv.cs.evol.repatch.utils;
 
+import edu.unlv.cs.evol.repatch.platform.IntelliJ2024PlatformFacade;
+import edu.unlv.cs.evol.repatch.platform.VfsSyncService;
 import edu.unlv.cs.evol.repatch.refactoringObjects.*;
 import edu.unlv.cs.evol.repatch.refactoringObjects.typeObjects.MethodSignatureObject;
 import edu.unlv.cs.evol.repatch.refactoringObjects.typeObjects.ParameterObject;
@@ -48,6 +50,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public class Utils {
     Project project;
+    private final VfsSyncService vfs;
 
     public static final String CONFLICT_LEFT_BEGIN = "<<<<<<<";
     public static final String CONFLICT_RIGHT_END = ">>>>>>>";
@@ -57,7 +60,12 @@ public class Utils {
 
 
     public Utils(Project project) {
+        this(project, new VfsSyncService(new IntelliJ2024PlatformFacade()));
+    }
+
+    public Utils(Project project, VfsSyncService vfs) {
         this.project = project;
+        this.vfs = vfs;
     }
 
     /*
@@ -506,11 +514,7 @@ public class Utils {
                 continue;
             }
 
-            runWhenSmartWithFuture(project, () -> {
-                Utils.refreshVFS();
-                Utils.reparsePsiFiles(project);
-                Utils.dumbServiceHandler(project);
-            });
+            runWhenSmartWithFuture(project, () -> vfs.synchronize(project));
 
             setBoundaries(refactoring);
             if (!checkReplayRefactoring(refactoring, conflictingRegions)) {
