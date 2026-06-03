@@ -207,11 +207,18 @@ public class RePatch extends AnAction {
         ArrayList<RefactoringObject> simplifiedRefactorings = new ArrayList<>();
         Matrix matrix = new Matrix(project);
         GitHistoryRefactoringMiner miner = new GitHistoryRefactoringMinerImpl();
+        // Counters surface RefactoringMiner exceptions that the default no-op
+        // handleException would otherwise swallow. The 2024.x migration
+        // records ~50% fewer refactorings than the 2020.1.2 baseline; if a
+        // per-commit miner failure is the cause, it lands here.
+        int[] commitsHandled = {0};
+        int[] commitsFailed = {0};
         try {
             miner.detectBetweenCommits(git.getRepository(), base, commit,
                 new RefactoringHandler() {
                     @Override
                     public void handle(String commitId, List<Refactoring> refactorings) {
+                        commitsHandled[0]++;
                         // Add each refactoring to refResult
                         for(Refactoring refactoring : refactorings) {
                             // Create the refactoring object so we can compare and update
@@ -225,10 +232,23 @@ public class RePatch extends AnAction {
                             matrix.simplifyAndInsertRefactorings(refactoringObject, simplifiedRefactorings);
                         }
                     }
+
+                    @Override
+                    public void handleException(String commitId, Exception e) {
+                        commitsFailed[0]++;
+                        System.out.println("[RefactoringMiner] handleException on commit "
+                                + commitId + " (base=" + base + " -> " + commit + "): "
+                                + e.getClass().getName() + ": " + e.getMessage());
+                        e.printStackTrace();
+                    }
                 });
         } catch (Exception e) {
             e.printStackTrace();
         }
+        System.out.println("[RefactoringMiner] detect summary base=" + base + " -> " + commit
+                + ": commitsHandled=" + commitsHandled[0]
+                + " commitsFailed=" + commitsFailed[0]
+                + " refactoringsAccumulated=" + detectedRefactorings.size());
         return simplifiedRefactorings;
     }
 
