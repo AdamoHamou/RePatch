@@ -7,7 +7,8 @@ import edu.unlv.cs.evol.repatch.refactoringObjects.RefactoringObject;
 import edu.unlv.cs.evol.integration.utils.EvaluationUtils;
 import edu.unlv.cs.evol.integration.utils.GitUtils;
 import edu.unlv.cs.evol.integration.utils.Utils;
-import com.intellij.ide.impl.ProjectUtil;
+import edu.unlv.cs.evol.repatch.platform.IntelliJ2024PlatformFacade;
+import edu.unlv.cs.evol.repatch.platform.PlatformFacade;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.project.DumbService;
 import com.intellij.openapi.vcs.ProjectLevelVcsManager;
@@ -44,9 +45,15 @@ import java.util.List;
 public class RePatchIntegration {
     private com.intellij.openapi.project.Project project;
     private String remoteRepoName;
+    private final PlatformFacade platform;
 
     public RePatchIntegration() {
+        this(new IntelliJ2024PlatformFacade());
+    }
+
+    public RePatchIntegration(PlatformFacade platform) {
         this.project = null;
+        this.platform = platform;
     }
 
     /*
@@ -610,7 +617,7 @@ public class RePatchIntegration {
                 addRemote(pathToProject, remoteProjectName, remoteOriginUrl);
             }
 
-            this.project = ProjectUtil.openOrImport(pathToProject.toPath(), null, false);
+            this.project = platform.openProject(pathToProject.toPath());
 
         }
         catch(Exception e) {
