@@ -110,8 +110,15 @@ public class RePatch extends AnAction {
         ExecutorService executor = Executors.newSingleThreadExecutor();
         AtomicReference<ArrayList<RefactoringObject>> rightRefsAtomic = new AtomicReference<>(new ArrayList<>());
         AtomicReference<ArrayList<RefactoringObject>> leftRefsAtomic = new AtomicReference<>(new ArrayList<>());
+        // When rightCommit is a GitHub PR merge commit, the linear range
+        // base..rightCommit covers only the merge commit itself (1 commit,
+        // 0 refactorings) — the PR's actual changes live on the merge's
+        // second parent (the branched-in tip). Detect against that instead
+        // so RefactoringMiner walks the PR's real commit range. For non-
+        // merge commits the helper returns the input unchanged.
+        String rightDetectCommit = resolveMergedInTip(rightCommit);
         Future futureRefMiner = executor.submit(() -> {
-            rightRefsAtomic.set(detectAndSimplifyRefactorings(rightCommit, baseCommit, detectedRefactorings));
+            rightRefsAtomic.set(detectAndSimplifyRefactorings(rightDetectCommit, baseCommit, detectedRefactorings));
             leftRefsAtomic.set(detectAndSimplifyRefactorings(leftCommit, baseCommit, detectedRefactorings));
         });
         try {
@@ -250,6 +257,44 @@ public class RePatch extends AnAction {
                 + " commitsFailed=" + commitsFailed[0]
                 + " refactoringsAccumulated=" + detectedRefactorings.size());
         return simplifiedRefactorings;
+    }
+
+    /**
+     * If {@code commitSha} resolves to a merge commit (>=2 parents), return
+     * the SHA of its second parent — the tip of the branched-in line, which
+     * for a GitHub PR merge is the PR's last contributed commit. For non-
+     * merge commits, return {@code commitSha} unchanged.
+     *
+     * RefactoringMiner's detectBetweenCommits(base, end) iterates the linear
+     * commit range base..end. When end is a merge commit and base is its
+     * first parent, that range contains only the merge commit itself and
+     * RefactoringMiner reports zero refactorings — the merged-in commits
+     * are reachable only via the second parent. Rewriting end to the second
+     * parent makes the walk traverse the PR's real changes.
+     */
+    private String resolveMergedInTip(String commitSha) {
+        if (git == null) {
+            return commitSha;
+        }
+        try {
+            org.eclipse.jgit.lib.ObjectId id = git.getRepository().resolve(commitSha);
+            if (id == null) {
+                return commitSha;
+            }
+            try (org.eclipse.jgit.revwalk.RevWalk rw = new org.eclipse.jgit.revwalk.RevWalk(git.getRepository())) {
+                org.eclipse.jgit.revwalk.RevCommit c = rw.parseCommit(id);
+                if (c.getParentCount() >= 2) {
+                    String resolved = c.getParent(1).getName();
+                    System.out.println("[RefactoringMiner] right-side detect target rewritten: "
+                            + commitSha + " (merge) -> " + resolved + " (second parent)");
+                    return resolved;
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("[RefactoringMiner] resolveMergedInTip failed for " + commitSha
+                    + ": " + e.getClass().getName() + ": " + e.getMessage());
+        }
+        return commitSha;
     }
 
 }
