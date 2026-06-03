@@ -22,7 +22,6 @@ import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.vfs.VirtualFileManager;
 import com.intellij.psi.*;
-import com.intellij.psi.impl.JavaPsiFacadeImpl;
 import com.intellij.psi.search.FilenameIndex;
 import com.intellij.psi.search.GlobalSearchScope;
 import com.intellij.psi.search.searches.ClassInheritorsSearch;
@@ -419,7 +418,11 @@ public class Utils {
     }
 
     public PsiClass getPsiClassFromClassAndFileNames(String className, String filePath) {
-        JavaPsiFacade jPF = new JavaPsiFacadeImpl(project);
+        // Use the public JavaPsiFacade singleton accessor instead of instantiating the
+        // impl-package class directly. The previous `new JavaPsiFacadeImpl(project)` not
+        // only depended on a non-API class, it also constructed a second instance rather
+        // than reusing the project-scoped service.
+        JavaPsiFacade jPF = JavaPsiFacade.getInstance(project);
         PsiClass psiClass = jPF.findClass(className, GlobalSearchScope.allScope((project)));
         // If the class isn't found, there might not have been a gradle file and we need to find the class another way
         if(psiClass == null) {
