@@ -1,70 +1,102 @@
 package edu.unlv.cs.evol.repatch.invertOperations;
 
+import edu.unlv.cs.evol.repatch.platform.PsiSearchService;
+import edu.unlv.cs.evol.repatch.platform.RefactoringExecutionContext;
+import edu.unlv.cs.evol.repatch.platform.RefactoringOperation;
 import edu.unlv.cs.evol.repatch.refactoringObjects.MoveRenameMethodObject;
 import edu.unlv.cs.evol.repatch.refactoringObjects.RefactoringObject;
 import edu.unlv.cs.evol.repatch.refactoringObjects.typeObjects.MethodSignatureObject;
-import edu.unlv.cs.evol.repatch.utils.Utils;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.VirtualFile;
-import com.intellij.psi.*;
-import com.intellij.refactoring.*;
+import com.intellij.psi.PsiClass;
+import com.intellij.psi.PsiMember;
+import com.intellij.psi.PsiMethod;
+import com.intellij.psi.PsiSubstitutor;
+import com.intellij.refactoring.JavaRefactoringFactory;
+import com.intellij.refactoring.MoveMembersRefactoring;
+import com.intellij.refactoring.RefactoringFactory;
+import com.intellij.refactoring.RenameRefactoring;
 import com.intellij.usageView.UsageInfo;
-import com.intellij.usages.UsageView;
-import com.intellij.usages.UsageViewManager;
 
-// To Do: Refactor to use invert super class
-public class InvertMoveRenameMethod {
+/**
+ * Inverts a rename/move method refactoring by renaming/moving the method
+ * back. Migrated onto the Week 4A contract.
+ *
+ * Operation family: move/rename (method).
+ *  - Expected PSI inputs: the destination class (for moves) or original
+ *    class (rename-only) resolvable from the destination file path, and
+ *    the refactored method signature present on it.
+ *  - Side effects: method renamed to its original name and/or moved back
+ *    to the original class; for moves the method-above anchor is recorded
+ *    on the refactoring object so replay can restore ordering.
+ *  - Failure behavior: unresolvable class/method classify as
+ *    PRECONDITION_FAILED before mutation; processor blowups are
+ *    PROCESSOR_THREW.
+ *  - Postcondition: a method matching the original signature is
+ *    resolvable on the original class.
+ */
+public class InvertMoveRenameMethod implements RefactoringOperation {
 
-    Project project;
+    private final MoveRenameMethodObject moveRenameMethodObject;
 
-    public InvertMoveRenameMethod(Project project) {
-        this.project = project;
+    // Resolved during prepare (steps 1-2), consumed by execute (step 3).
+    private PsiClass psiClass;
+    private PsiMethod psiMethod;
+    private VirtualFile vFile;
+
+    public InvertMoveRenameMethod(RefactoringObject refactoringObject) {
+        this.moveRenameMethodObject = (MoveRenameMethodObject) refactoringObject;
     }
 
-    /*
-     * Invert the rename method refactoring that was performed in the commit
-     */
-    public void invertMoveRenameMethod(RefactoringObject ref) {
-        MoveRenameMethodObject moveRenameMethodObject = (MoveRenameMethodObject) ref;
-        MethodSignatureObject original = moveRenameMethodObject.getOriginalMethodSignature();
+    @Override
+    public String describe() {
+        return "invert " + moveRenameMethodObject.getRefactoringType()
+                + " (" + moveRenameMethodObject.getRefactoringDetail() + ")";
+    }
+
+    @Override
+    public void prepare(RefactoringExecutionContext context) throws PreconditionFailed {
+        Project project = context.getProject();
         MethodSignatureObject refactored = moveRenameMethodObject.getDestinationMethodSignature();
+        String originalClassName = moveRenameMethodObject.getOriginalClassName();
+        String destinationClassName = moveRenameMethodObject.getOriginalDestinationClassName();
+        // get the PSI class using the qualified class name
+        String filePath = moveRenameMethodObject.getDestinationFilePath();
+
+        context.getProjectRoots().addSourceRoot(project, filePath, destinationClassName);
+
+        String className = moveRenameMethodObject.isMoveMethod() ? destinationClassName : originalClassName;
+        psiClass = context.getPsiSearch().findClass(project, className, filePath);
+        // If we cannot find the PSI class, do not try to invert the refactoring
+        if (psiClass == null) {
+            throw new PreconditionFailed("class " + className + " not resolvable from " + filePath);
+        }
+        vFile = psiClass.getContainingFile().getVirtualFile();
+        psiMethod = PsiSearchService.findMethod(psiClass, refactored);
+        if (psiMethod == null) {
+            throw new PreconditionFailed("refactored method " + refactored.getName()
+                    + " not found on " + className);
+        }
+    }
+
+    @Override
+    public void execute(RefactoringExecutionContext context) {
+        Project project = context.getProject();
+        MethodSignatureObject original = moveRenameMethodObject.getOriginalMethodSignature();
         String originalMethodName = original.getName();
         String originalClassName = moveRenameMethodObject.getOriginalClassName();
-        // String destinationClassName = moveRenameMethodObject.getDestinationClassName();
-        String destinationClassName = moveRenameMethodObject.getOriginalDestinationClassName();
-        // get the PSI class using original the qualified class name
-        String filePath = moveRenameMethodObject.getDestinationFilePath();
-        Utils utils = new Utils(project);
-        utils.addSourceRoot(filePath, destinationClassName);
-        PsiClass psiClass;
-        if(moveRenameMethodObject.isMoveMethod()) {
-            psiClass = utils.getPsiClassFromClassAndFileNames(destinationClassName, filePath);
-        }
-        else {
-            psiClass = utils.getPsiClassFromClassAndFileNames(originalClassName, filePath);
-        }
-        // If we cannot find the PSI class, do not try to invert the refactoring
-        if(psiClass == null) {
-            return;
-        }
-        VirtualFile vFile = psiClass.getContainingFile().getVirtualFile();
-        PsiMethod psiMethod = Utils.getPsiMethod(psiClass, refactored);
-        if(psiMethod == null) {
-            return;
-        }
 
-        // If the operation was refactored, undo the method refactoring by performing a method refactoring to change it
+        // If the operation was renamed, undo the method refactoring by performing a method refactoring to change it
         // to the original operation
-        if(moveRenameMethodObject.isRenameMethod()) {
+        if (moveRenameMethodObject.isRenameMethod()) {
             RefactoringFactory factory = JavaRefactoringFactory.getInstance(project);
             RenameRefactoring renameRefactoring = factory.createRename(psiMethod, originalMethodName, true, true);
             UsageInfo[] refactoringUsages = renameRefactoring.findUsages();
             renameRefactoring.doRefactoring(refactoringUsages);
-
         }
         // If the operation was moved, undo the move method by performing a move method refactoring to move it to the
         // original class
-        if(moveRenameMethodObject.isMoveMethod()) {
+        if (moveRenameMethodObject.isMoveMethod()) {
             // Get the method before the moved method so it can be moved to the correct location
             moveRenameMethodObject.setMethodAbove(getAboveMethodBeforeMove(psiClass, psiMethod));
 
@@ -76,42 +108,45 @@ public class InvertMoveRenameMethod {
                     originalClassName, visibility);
             UsageInfo[] refactoringUsages = moveMethodRefactoring.findUsages();
             moveMethodRefactoring.doRefactoring(refactoringUsages);
-            psiClass = moveMethodRefactoring.getTargetClass();
-            if(psiClass == null) {
-                return;
-            }
         }
 
-        UsageViewManager viewManager = UsageViewManager.getInstance(project);
-        UsageView usageView = viewManager.getSelectedUsageView();
-        if(usageView != null) {
-            usageView.close();
-        }
-
+        context.getPlatform().closeActiveUsageView(project);
         // Update the virtual file that contains the refactoring
         vFile.refresh(false, true);
+    }
 
+    @Override
+    public String verifyPostcondition(RefactoringExecutionContext context) {
+        MethodSignatureObject original = moveRenameMethodObject.getOriginalMethodSignature();
+        String originalClassName = moveRenameMethodObject.getOriginalClassName();
+        String originalFilePath = moveRenameMethodObject.getOriginalFilePath();
+        PsiClass originalClass = context.getPsiSearch()
+                .findClass(context.getProject(), originalClassName, originalFilePath);
+        if (originalClass == null) {
+            return "original class " + originalClassName + " not resolvable from " + originalFilePath;
+        }
+        if (PsiSearchService.findMethod(originalClass, original) == null) {
+            return "method " + original.getName() + " not restored on " + originalClassName;
+        }
+        return null;
     }
 
     /*
      * Get the method signature before the method that's moved so we can move it back to the same spot.
      */
-
     private String getAboveMethodBeforeMove(PsiClass psiClass, PsiMethod psiMethod) {
         String signatureString = null;
         PsiMethod[] psiMethods = psiClass.getMethods();
-        for(int i = 0; i < psiMethods.length; i++) {
-
+        for (int i = 0; i < psiMethods.length; i++) {
             PsiMethod otherMethod = psiMethods[i];
-            if(psiMethod.getSignature(PsiSubstitutor.UNKNOWN).equals(otherMethod.getSignature(PsiSubstitutor.UNKNOWN))) {
-                if(i == 0) {
+            if (psiMethod.getSignature(PsiSubstitutor.UNKNOWN).equals(otherMethod.getSignature(PsiSubstitutor.UNKNOWN))) {
+                if (i == 0) {
                     break;
                 }
-                signatureString = psiMethods[i-1].getSignature(PsiSubstitutor.UNKNOWN).toString();
+                signatureString = psiMethods[i - 1].getSignature(PsiSubstitutor.UNKNOWN).toString();
                 break;
             }
         }
         return signatureString;
     }
-
 }

@@ -64,8 +64,8 @@ public class ReplayRefactorings {
             case RENAME_METHOD:
             case MOVE_OPERATION:
             case MOVE_AND_RENAME_OPERATION:
-                return RefactoringOperation.legacy(description,
-                        () -> new ReplayMoveRenameMethod(project).replayMoveRenameMethod(refactoringObject));
+                // Migrated onto the 4A contract: implements RefactoringOperation directly.
+                return new ReplayMoveRenameMethod(refactoringObject);
             case EXTRACT_OPERATION:
                 return RefactoringOperation.legacy(description,
                         () -> new ReplayExtractMethod(project).replayExtractMethod(refactoringObject));

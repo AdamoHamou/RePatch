@@ -83,8 +83,8 @@ public class InvertRefactorings {
             case RENAME_METHOD:
             case MOVE_OPERATION:
             case MOVE_AND_RENAME_OPERATION:
-                return RefactoringOperation.legacy(description,
-                        () -> new InvertMoveRenameMethod(project).invertMoveRenameMethod(refactoringObject));
+                // Migrated onto the 4A contract: implements RefactoringOperation directly.
+                return new InvertMoveRenameMethod(refactoringObject);
             case EXTRACT_OPERATION:
                 return RefactoringOperation.legacy(description,
                         () -> replacement.set(new InvertExtractMethod(project).invertExtractMethod(refactoringObject)));
