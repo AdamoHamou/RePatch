@@ -1,3 +1,5 @@
+import org.jetbrains.intellij.platform.gradle.TestFrameworkType
+
 plugins {
     id 'java'
     id 'idea'
@@ -56,6 +58,11 @@ dependencies {
     intellijPlatform {
         intellijIdeaCommunity '2024.3.7'
         bundledPlugins 'Git4Idea', 'com.intellij.java'
+        // Light-fixture test support; on plugin 2.x the test frameworks are
+        // explicit dependencies. LightJavaCodeInsightFixtureTestCase lives in
+        // the Java plugin's test framework, on top of the platform one.
+        testFramework TestFrameworkType.Platform.INSTANCE
+        testFramework TestFrameworkType.Plugin.Java.INSTANCE
     }
 
     implementation fileTree(dir: 'lib', include: ['*.jar'])
