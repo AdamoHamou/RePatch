@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=RePatch (IntelliJ 2024.3.7)
+Comment=Open the RePatch migration project in IntelliJ IDEA
+# Adjust both paths for the target machine:
+#   IDEA_HOME   -> where the IntelliJ IDEA CE 2024.3.7 tarball was unpacked
+#   REPATCH_DIR -> where the RePatch repo was cloned
+Exec=/opt/idea-IC-2024.3.7/bin/idea.sh /opt/repatch/RePatch
+Icon=/opt/idea-IC-2024.3.7/bin/idea.svg
+Terminal=false
+Categories=Development;IDE;
+StartupWMClass=jetbrains-idea-ce
