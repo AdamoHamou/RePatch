@@ -42,6 +42,40 @@ public interface RefactoringOperation {
         return null;
     }
 
+    /**
+     * Adapter for operation classes not yet migrated onto the contract:
+     * no declared preconditions, the whole legacy body runs as step 3.
+     * Failures still get classified (PROCESSOR_THREW) and the service
+     * still applies post-operation sync, which is strictly better than
+     * the bespoke try/printStackTrace the dispatchers had — but a silent
+     * {@code return} inside the legacy body is still invisible. Migrating
+     * the class to implement {@link RefactoringOperation} directly is what
+     * surfaces those as PRECONDITION_FAILED / UNSUPPORTED_SHAPE.
+     */
+    static RefactoringOperation legacy(String description, Body body) {
+        return new RefactoringOperation() {
+            @Override
+            public String describe() {
+                return description;
+            }
+
+            @Override
+            public void prepare(RefactoringExecutionContext context) {
+            }
+
+            @Override
+            public void execute(RefactoringExecutionContext context) throws Exception {
+                body.run();
+            }
+        };
+    }
+
+    /** Legacy operation body; may throw anything the old code threw. */
+    @FunctionalInterface
+    interface Body {
+        void run() throws Exception;
+    }
+
     /** Thrown from {@link #prepare} when a required PSI target or input is missing. */
     final class PreconditionFailed extends Exception {
         public PreconditionFailed(String detail) {

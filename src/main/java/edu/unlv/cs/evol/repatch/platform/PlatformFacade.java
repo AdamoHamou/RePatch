@@ -61,6 +61,13 @@ public interface PlatformFacade {
     void runWriteCommand(Project project, Runnable action);
 
     /**
+     * Flush all in-memory document changes to disk. The dispatchers call
+     * this after a replay/invert pass so the subsequent git operations see
+     * the refactored content.
+     */
+    void saveAllDocuments();
+
+    /**
      * Evaluate {@code computation} inside a read action, waiting for smart
      * mode first if the index is dumb. This is the correct primitive for
      * every PSI read on the headless path: the pipeline runs immediately

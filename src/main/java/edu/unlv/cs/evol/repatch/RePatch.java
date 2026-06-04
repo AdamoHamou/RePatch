@@ -4,6 +4,7 @@ import edu.unlv.cs.evol.repatch.invertOperations.InvertRefactorings;
 import edu.unlv.cs.evol.repatch.matrix.Matrix;
 import edu.unlv.cs.evol.repatch.platform.IntelliJ2024PlatformFacade;
 import edu.unlv.cs.evol.repatch.platform.PlatformFacade;
+import edu.unlv.cs.evol.repatch.platform.RefactoringExecutionContext;
 import edu.unlv.cs.evol.repatch.platform.VfsSyncService;
 import edu.unlv.cs.evol.repatch.replayOperations.ReplayRefactorings;
 import edu.unlv.cs.evol.repatch.utils.RefactoringObjectUtils;
@@ -38,6 +39,7 @@ public class RePatch extends AnAction {
 
     Git git;
     Project project;
+    private final PlatformFacade platform;
     private final VfsSyncService vfs;
 
     public RePatch() {
@@ -45,6 +47,7 @@ public class RePatch extends AnAction {
     }
 
     public RePatch(PlatformFacade platform) {
+        this.platform = platform;
         this.vfs = new VfsSyncService(platform);
     }
 
@@ -149,15 +152,16 @@ public class RePatch extends AnAction {
         gitUtils.checkout(rightCommit);
         // Update the PSI classes after the commit
         vfs.commitAndReparse(project);
+        RefactoringExecutionContext executionContext = new RefactoringExecutionContext(project, platform);
         System.out.println("Inverting right refactorings");
-        int failedRefactorings = InvertRefactorings.invertRefactorings(rightRefs, project);
+        int failedRefactorings = InvertRefactorings.invertRefactorings(rightRefs, executionContext);
         vfs.commitAndReparse(project);
         String rightUndoCommit = gitUtils.addAndCommit();
         gitUtils.checkout(leftCommit);
         // Update the PSI classes after the commit
         vfs.commitAndReparse(project);
         System.out.println("Inverting left refactorings");
-        failedRefactorings += InvertRefactorings.invertRefactorings(leftRefs, project);
+        failedRefactorings += InvertRefactorings.invertRefactorings(leftRefs, executionContext);
 
         gitUtils.addAndCommit();
 
@@ -199,7 +203,11 @@ public class RePatch extends AnAction {
         // Combine the lists so we can perform all the refactorings on the merged project
         // Replay all of the refactorings
         System.out.println("Replaying refactorings");
-        ReplayRefactorings.replayRefactorings(pair.getRight(), project);
+        int failedReplays = ReplayRefactorings.replayRefactorings(pair.getRight(), executionContext);
+        if (failedReplays > 0) {
+            Utils.log(project.getName(), failedReplays + " refactorings were not replayed for "
+                    + leftCommit + " and " + rightCommit);
+        }
 
         return pair.getLeft();
 
