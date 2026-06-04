@@ -199,7 +199,14 @@ public class Utils {
             return;
         }
         List<Pair<Integer, Integer>> conflictingRegions = getConflictingRegions(absolutePath);
-        for(RefactoringObject refactoring : refactorings) {
+        // Explicit iterator: removing through the iterator is the only safe
+        // in-loop removal. The previous for-each + List.remove threw
+        // ConcurrentModificationException on the first removal, which
+        // aborted the filtering for the whole file and let refactorings
+        // inside conflicting regions through to replay.
+        Iterator<RefactoringObject> iterator = refactorings.iterator();
+        while (iterator.hasNext()) {
+            RefactoringObject refactoring = iterator.next();
             if(refactoring instanceof InlineMethodObject || refactoring instanceof ExtractMethodObject) {
                 continue;
             }
@@ -217,7 +224,7 @@ public class Utils {
 
             setBoundaries(refactoring);
             if (!checkReplayRefactoring(refactoring, conflictingRegions)) {
-                refactorings.remove(refactoring);
+                iterator.remove();
             }
         }
     }
