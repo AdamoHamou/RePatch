@@ -38,7 +38,16 @@ public class IntegrationPipeline implements ApplicationStarter {
             e.printStackTrace();
             System.exit(1);
         }
-        System.exit(0);
+        // Pipeline work (DB writes, result files) is complete by the time we
+        // reach this point — Base.close() runs at the end of startEvaluation.
+        // System.exit(0) waits for shutdown hooks, and a non-daemon worker
+        // thread (likely an ActiveJDBC connection-pool or RefactoringMiner
+        // executor) keeps the JVM alive indefinitely. halt(0) skips the hooks
+        // and exits immediately. We flush stdout/stderr explicitly because
+        // halt also skips the JVM's normal stream-flush-on-exit.
+        System.out.flush();
+        System.err.flush();
+        Runtime.getRuntime().halt(0);
     }
 
 
