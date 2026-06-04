@@ -1,6 +1,7 @@
 package edu.unlv.cs.evol.repatch.utils;
 
 import edu.unlv.cs.evol.repatch.platform.IntelliJ2024PlatformFacade;
+import edu.unlv.cs.evol.repatch.platform.PsiSearchService;
 import edu.unlv.cs.evol.repatch.platform.VfsSyncService;
 import edu.unlv.cs.evol.repatch.refactoringObjects.*;
 import edu.unlv.cs.evol.repatch.refactoringObjects.typeObjects.MethodSignatureObject;
@@ -24,8 +25,6 @@ import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.vfs.VirtualFileManager;
 import com.intellij.psi.*;
-import com.intellij.psi.search.FilenameIndex;
-import com.intellij.psi.search.GlobalSearchScope;
 import com.intellij.psi.search.searches.ClassInheritorsSearch;
 import com.intellij.refactoring.JavaRefactoringFactory;
 import com.intellij.refactoring.RefactoringFactory;
@@ -51,6 +50,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public class Utils {
     Project project;
     private final VfsSyncService vfs;
+    private final PsiSearchService psiSearch;
 
     public static final String CONFLICT_LEFT_BEGIN = "<<<<<<<";
     public static final String CONFLICT_RIGHT_END = ">>>>>>>";
@@ -60,12 +60,17 @@ public class Utils {
 
 
     public Utils(Project project) {
-        this(project, new VfsSyncService(new IntelliJ2024PlatformFacade()));
+        this(project, new IntelliJ2024PlatformFacade());
     }
 
-    public Utils(Project project, VfsSyncService vfs) {
+    private Utils(Project project, IntelliJ2024PlatformFacade platform) {
+        this(project, new VfsSyncService(platform), new PsiSearchService(platform));
+    }
+
+    public Utils(Project project, VfsSyncService vfs, PsiSearchService psiSearch) {
         this.project = project;
         this.vfs = vfs;
+        this.psiSearch = psiSearch;
     }
 
     /*
@@ -297,181 +302,34 @@ public class Utils {
         PsiDocumentManager.getInstance(project).commitAllDocuments();
     }
 
+    // The PSI lookup family below moved to PsiSearchService (Week 4 / 4B).
+    // These delegations keep the 30+ unmigrated invert/replay/matrix call
+    // sites compiling; new code should depend on PsiSearchService directly.
+    // The index-backed lookups now run inside a smart read action, which is
+    // what eliminated the post-checkout IndexNotReadyException flood.
+
     public static boolean ifSameMethods(PsiMethod method, MethodSignatureObject methodSignature) {
-        PsiParameter[] psiParameterList = method.getParameterList().getParameters();
-        List<ParameterObject> parameters = methodSignature.getParameterList();
-        String umlName = methodSignature.getName();
-        String psiName = method.getName();
-        int firstUMLParam = 0;
-        // Check if the method names are the same
-        if (!umlName.equals(psiName)) {
-            return false;
-        }
-        // If the number of parameters are different, the methods are different
-        // Subtract 1 from umlParameters because umlParameters includes return type
-        if (!methodSignature.isConstructor()) {
-            if (parameters.size() - 1 != psiParameterList.length) {
-                return false;
-            }
-            PsiType psiReturnType = method.getReturnType();
-            assert psiReturnType != null;
-            String psiType = psiReturnType.getPresentableText();
-            ParameterObject parameterObject = parameters.get(0);
-            String parameterType = parameterObject.getType();
-            // Check if the return types are the same
-            if (!psiType.equals(parameterType)) {
-                // Check if UML type is class type
-                if (parameterType.contains(".")) {
-                    parameterType = parameterType.substring(parameterType.lastIndexOf(".") + 1);
-                    if (!parameterType.equals(psiType)) {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-            }
-            firstUMLParam = 1;
-        }
-        else {
-            if(parameters.size() != psiParameterList.length) {
-                return false;
-            }
-        }
-        // Check if the parameters are the same
-        return parameterComparator(firstUMLParam, parameters, psiParameterList);
-    }
-
-    /*
-     * Compare the parameters in the UML parameter list to the parameters in the PSI parameter list to see if
-     * the method signatures are the same.
-     */
-    private static boolean parameterComparator(int firstUMLParam, List<ParameterObject> parameters,
-                                        PsiParameter[] psiParameterList) {
-        ParameterObject parameterObject;
-        String umlType;
-        String psiType;
-        // Check if the parameters are the same
-        for(int i = firstUMLParam; i < parameters.size(); i++) {
-            int j = i - firstUMLParam;
-            parameterObject = parameters.get(i);
-            PsiParameter psiParameter = psiParameterList[j];
-            umlType = parameterObject.getType();
-
-            String parameterName = psiParameter.getName();
-            psiType = psiParameter.getText();
-            psiType = psiType.substring(0, psiType.lastIndexOf(parameterName) - 1);
-            // If the parameter has the final modifier, remove it for comparison with UML parameter.
-            if(psiParameter.hasModifierProperty(PsiModifier.FINAL)) {
-                psiType = psiType.substring(psiType.indexOf("final ") + 6);
-            }
-            // Replace int... with int[] for comparison with RefMiner object
-            if(psiType.contains("...")) {
-                psiType = psiType.replace("...", "[]");
-            }
-            if(!umlType.equals(psiType)) {
-                return false;
-            }
-
-        }
-        return true;
+        return PsiSearchService.sameMethods(method, methodSignature);
     }
 
     public PsiClass getPsiClassByFilePath(String filePath, String qualifiedClass) {
-        // Get the name of the java file without the path
-        String fileName = filePath.substring(filePath.lastIndexOf("/") + 1);
-        PsiFile[] psiFiles = FilenameIndex.getFilesByName(project, fileName, GlobalSearchScope.allScope(project));
-        // If no files are found, give an error message for debugging
-        if(psiFiles.length == 0) {
-            System.out.println("FAILED HERE");
-            System.out.println(filePath);
-            return null;
-        }
-        for (PsiFile file : psiFiles) {
-            String classPath = file.getVirtualFile().getPath();
-            if(!classPath.contains(filePath)) {
-                continue;
-            }
-            PsiJavaFile psiFile = (PsiJavaFile) file;
-            // Get the classes in the file
-            PsiClass[] jClasses = psiFile.getClasses();
-            for (PsiClass it : jClasses) {
-                // Find the class that the refactoring happens in
-                if (Objects.equals(it.getQualifiedName(), qualifiedClass)) {
-                    return it;
-                }
-                // Need to update tests to remove this
-                if (ApplicationManager.getApplication().isUnitTestMode()) {
-                    if(qualifiedClass.contains(Objects.requireNonNull(it.getName()))) {
-                        return it;
-                    }
-                }
-                PsiClass[] innerClasses = it.getInnerClasses();
-                for (PsiClass innerIt : innerClasses) {
-                    if (Objects.equals(innerIt.getQualifiedName(), qualifiedClass)) {
-                        return innerIt;
-                    }
-                }
-            }
-            for(PsiClass it : jClasses) {
-                String qName = it.getQualifiedName();
-                assert qName != null;
-                qName = qName.substring(qName.lastIndexOf(".") + 1);
-                String otherName = qualifiedClass.substring(qualifiedClass.lastIndexOf(".") + 1);
-                if(Objects.equals(qName, otherName)) {
-                    return it;
-                }
-            }
-        }
-        return null;
+        return psiSearch.findClassByFilePath(project, filePath, qualifiedClass);
     }
 
     public PsiClass getPsiClassFromClassAndFileNames(String className, String filePath) {
-        // Use the public JavaPsiFacade singleton accessor instead of instantiating the
-        // impl-package class directly. The previous `new JavaPsiFacadeImpl(project)` not
-        // only depended on a non-API class, it also constructed a second instance rather
-        // than reusing the project-scoped service.
-        JavaPsiFacade jPF = JavaPsiFacade.getInstance(project);
-        PsiClass psiClass = jPF.findClass(className, GlobalSearchScope.allScope((project)));
-        // If the class isn't found, there might not have been a gradle file and we need to find the class another way
-        if(psiClass == null) {
-            psiClass = getPsiClassByFilePath(filePath, className);
-        }
-        return psiClass;
+        return psiSearch.findClass(project, className, filePath);
     }
 
     public static PsiMethod getPsiMethod(PsiClass psiClass, MethodSignatureObject methodSignatureObject) {
-        PsiMethod[] methods = psiClass.getMethods();
-        for(PsiMethod method : methods) {
-            if(Utils.ifSameMethods(method, methodSignatureObject)) {
-                return method;
-            }
-        }
-        return null;
+        return PsiSearchService.findMethod(psiClass, methodSignatureObject);
     }
 
     public static PsiParameter getPsiParameter(PsiMethod psiMethod, ParameterObject parameterObject) {
-        // No need to compare types, two parameters in the same signature cannot have the same name,
-        // so the type does not matter
-        String parameterName = parameterObject.getName();
-        PsiParameter[] parameters = psiMethod.getParameterList().getParameters();
-        for(PsiParameter parameter : parameters) {
-            String psiParameterName = parameter.getName();
-            if(psiParameterName.equals(parameterName)) {
-                return parameter;
-            }
-        }
-
-        return null;
+        return PsiSearchService.findParameter(psiMethod, parameterObject);
     }
 
     public static PsiField getPsiField(PsiClass psiClass, String fieldName) {
-        PsiField[] fields = psiClass.getFields();
-        for(PsiField field : fields) {
-            if(field.getName().equals(fieldName)) {
-                return field;
-            }
-        }
-        return null;
+        return PsiSearchService.findField(psiClass, fieldName);
     }
 
 
