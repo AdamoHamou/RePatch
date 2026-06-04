@@ -95,7 +95,23 @@ intellijPlatform {
 }
 
 
+// Reset DB + kafka fixture + sandbox lock before an integration run, so the
+// IDE Run-config "do reset, then runIde" workflow is a single click. Only
+// fires when -Pmode=integration is set, so plain runIde (sandbox-IDE for
+// AnAction debugging) is unaffected.
+tasks.register('resetIntegrationFixtures', Exec) {
+    description = 'Drop test DB, reset kafka to pinned SHA, clear sandbox lock.'
+    group = 'verification'
+    workingDir = project.projectDir
+    commandLine 'bash', "${project.projectDir}/scripts/reset-integration-fixtures.sh"
+    environment 'PROJECT_ROOT', project.projectDir.absolutePath
+    onlyIf {
+        project.hasProperty('mode') && project.findProperty('mode') == 'integration'
+    }
+}
+
 tasks.named('runIde').configure {
+    dependsOn 'resetIntegrationFixtures'
     jvmArgs '-Djava.awt.headless=true', '-Xss100m', '-Xmx16g'
     if (project.hasProperty("mode")) {
         Object x = project.findProperty("mode")
