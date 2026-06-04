@@ -1,5 +1,6 @@
 package edu.unlv.cs.evol.repatch.utils;
 
+import edu.unlv.cs.evol.repatch.platform.IndexingService;
 import edu.unlv.cs.evol.repatch.platform.IntelliJ2024PlatformFacade;
 import edu.unlv.cs.evol.repatch.platform.PsiSearchService;
 import edu.unlv.cs.evol.repatch.platform.VfsSyncService;
@@ -14,8 +15,6 @@ import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.module.Module;
 import com.intellij.openapi.module.ModuleManager;
 import com.intellij.openapi.progress.ProgressManager;
-import com.intellij.openapi.project.DumbAwareRunnable;
-import com.intellij.openapi.project.DumbService;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.roots.ContentEntry;
 import com.intellij.openapi.roots.ModifiableRootModel;
@@ -43,7 +42,6 @@ import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.text.SimpleDateFormat;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -51,6 +49,7 @@ public class Utils {
     Project project;
     private final VfsSyncService vfs;
     private final PsiSearchService psiSearch;
+    private final IndexingService indexing;
 
     public static final String CONFLICT_LEFT_BEGIN = "<<<<<<<";
     public static final String CONFLICT_RIGHT_END = ">>>>>>>";
@@ -64,13 +63,16 @@ public class Utils {
     }
 
     private Utils(Project project, IntelliJ2024PlatformFacade platform) {
-        this(project, new VfsSyncService(platform), new PsiSearchService(platform));
+        this(project, new VfsSyncService(platform), new PsiSearchService(platform),
+                new IndexingService(platform));
     }
 
-    public Utils(Project project, VfsSyncService vfs, PsiSearchService psiSearch) {
+    public Utils(Project project, VfsSyncService vfs, PsiSearchService psiSearch,
+                 IndexingService indexing) {
         this.project = project;
         this.vfs = vfs;
         this.psiSearch = psiSearch;
+        this.indexing = indexing;
     }
 
     /*
@@ -125,13 +127,6 @@ public class Utils {
     }
 
 
-
-    public static void dumbServiceHandler(Project project) {
-        if(DumbService.isDumb(project)) {
-            // 2024.x exposes completeJustSubmittedTasks on the public DumbService base.
-            DumbService.getInstance(project).completeJustSubmittedTasks();
-        }
-    }
 
     public static void refreshVFS() {
         VirtualFileManager vFM = VirtualFileManager.getInstance();
@@ -209,7 +204,7 @@ public class Utils {
             else {
                 contentEntry.addSourceFolder(sourceVirtualFile, isTestFolder);
                 WriteAction.run(rootModel.get()::commit);
-                Utils.dumbServiceHandler(project);
+                indexing.drainDumbTasks(project);
                 break;
             }
         }
@@ -372,29 +367,18 @@ public class Utils {
                 continue;
             }
 
-            runWhenSmartWithFuture(project, () -> vfs.synchronize(project));
+            // No per-iteration sync: the caller (RePatch.doMerge) runs
+            // vfs.synchronize(project) right after the cherry-pick, before this
+            // loop, and nothing here touches files on disk. The previous
+            // runWhenSmartWithFuture call was the RefMerge idiom that, on the
+            // EDT-dispatched headless path, only queued the sync for an
+            // unpredictable later time (and deadlocks if anyone .get()s it).
 
             setBoundaries(refactoring);
             if (!checkReplayRefactoring(refactoring, conflictingRegions)) {
                 refactorings.remove(refactoring);
             }
         }
-    }
-
-    public static CompletableFuture<Void> runWhenSmartWithFuture(Project project, Runnable task) {
-        CompletableFuture<Void> future = new CompletableFuture<>();
-
-        DumbService.getInstance(project).runWhenSmart((DumbAwareRunnable) () -> {
-            try {
-                System.out.println("Indexing completed. Executing task...");
-                task.run();
-                future.complete(null);
-            } catch (Exception e) {
-                future.completeExceptionally(e);
-            }
-        });
-
-        return future;
     }
 
     private List<Pair<Integer, Integer>> getConflictingRegions(String path) {
