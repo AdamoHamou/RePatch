@@ -11,6 +11,7 @@ import com.intellij.psi.PsiFile;
 import com.intellij.psi.PsiJavaFile;
 import com.intellij.psi.PsiMethod;
 import com.intellij.psi.PsiModifier;
+import com.intellij.psi.PsiPackage;
 import com.intellij.psi.PsiParameter;
 import com.intellij.psi.PsiType;
 import com.intellij.psi.search.FilenameIndex;
@@ -63,6 +64,15 @@ public final class PsiSearchService {
             }
             return psiClass;
         });
+    }
+
+    /**
+     * Resolve a package by qualified name, waiting for the index when dumb.
+     * Returns {@code null} when the package does not exist.
+     */
+    public PsiPackage findPackage(Project project, String qualifiedName) {
+        return platform.runInSmartReadAction(project,
+                () -> JavaPsiFacade.getInstance(project).findPackage(qualifiedName));
     }
 
     /**

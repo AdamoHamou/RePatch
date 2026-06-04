@@ -19,6 +19,7 @@ public final class RefactoringExecutionContext {
     private final VfsSyncService vfs;
     private final PsiSearchService psiSearch;
     private final IndexingService indexing;
+    private final ProjectRootsService projectRoots;
 
     public RefactoringExecutionContext(Project project, PlatformFacade platform) {
         this.project = project;
@@ -26,6 +27,7 @@ public final class RefactoringExecutionContext {
         this.vfs = new VfsSyncService(platform);
         this.psiSearch = new PsiSearchService(platform);
         this.indexing = new IndexingService(platform);
+        this.projectRoots = new ProjectRootsService(platform);
     }
 
     public Project getProject() {
@@ -46,5 +48,9 @@ public final class RefactoringExecutionContext {
 
     public IndexingService getIndexing() {
         return indexing;
+    }
+
+    public ProjectRootsService getProjectRoots() {
+        return projectRoots;
     }
 }

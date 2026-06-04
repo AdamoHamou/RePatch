@@ -1,12 +1,17 @@
 package edu.unlv.cs.evol.repatch.platform;
 
 import com.intellij.ide.impl.ProjectUtil;
+import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.application.ReadAction;
+import com.intellij.openapi.application.WriteAction;
 import com.intellij.openapi.command.WriteCommandAction;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.DumbService;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.VirtualFileManager;
 import com.intellij.psi.PsiDocumentManager;
+import com.intellij.usages.UsageView;
+import com.intellij.usages.UsageViewManager;
 
 import java.nio.file.Path;
 import java.util.function.Supplier;
@@ -70,6 +75,34 @@ public final class IntelliJ2024PlatformFacade implements PlatformFacade {
     @Override
     public void saveAllDocuments() {
         FileDocumentManager.getInstance().saveAllDocuments();
+    }
+
+    @Override
+    public <T> T runReadAction(Supplier<T> action) {
+        return ReadAction.compute(action::get);
+    }
+
+    @Override
+    public void runWriteAction(Runnable action) {
+        WriteAction.run(action::run);
+    }
+
+    @Override
+    public void invokeAndWait(Runnable action) {
+        ApplicationManager.getApplication().invokeAndWait(action);
+    }
+
+    @Override
+    public void closeActiveUsageView(Project project) {
+        UsageView usageView = UsageViewManager.getInstance(project).getSelectedUsageView();
+        if (usageView != null) {
+            usageView.close();
+        }
+    }
+
+    @Override
+    public boolean isUnitTestMode() {
+        return ApplicationManager.getApplication().isUnitTestMode();
     }
 
     /**

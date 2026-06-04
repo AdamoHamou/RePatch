@@ -2,6 +2,7 @@ package edu.unlv.cs.evol.repatch.utils;
 
 import edu.unlv.cs.evol.repatch.platform.IndexingService;
 import edu.unlv.cs.evol.repatch.platform.IntelliJ2024PlatformFacade;
+import edu.unlv.cs.evol.repatch.platform.ProjectRootsService;
 import edu.unlv.cs.evol.repatch.platform.PsiSearchService;
 import edu.unlv.cs.evol.repatch.platform.VfsSyncService;
 import edu.unlv.cs.evol.repatch.refactoringObjects.*;
@@ -9,18 +10,10 @@ import edu.unlv.cs.evol.repatch.refactoringObjects.typeObjects.MethodSignatureOb
 import edu.unlv.cs.evol.repatch.refactoringObjects.typeObjects.ParameterObject;
 import com.intellij.analysis.AnalysisScope;
 import com.intellij.openapi.application.ApplicationManager;
-import com.intellij.openapi.application.ReadAction;
-import com.intellij.openapi.application.WriteAction;
 import com.intellij.openapi.editor.Document;
-import com.intellij.openapi.module.Module;
-import com.intellij.openapi.module.ModuleManager;
 import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.project.Project;
-import com.intellij.openapi.roots.ContentEntry;
-import com.intellij.openapi.roots.ModifiableRootModel;
-import com.intellij.openapi.roots.ModuleRootManager;
 import com.intellij.openapi.util.TextRange;
-import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.vfs.VirtualFileManager;
 import com.intellij.psi.*;
@@ -34,7 +27,6 @@ import com.intellij.refactoring.util.duplicates.MethodDuplicatesHandler;
 import com.intellij.usageView.UsageInfo;
 import com.intellij.util.Query;
 import org.apache.commons.lang3.tuple.Pair;
-import org.jetbrains.jps.model.serialization.PathMacroUtil;
 
 import java.io.*;
 import java.nio.file.Files;
@@ -43,13 +35,13 @@ import java.nio.file.StandardOpenOption;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.atomic.AtomicReference;
 
 public class Utils {
     Project project;
     private final VfsSyncService vfs;
     private final PsiSearchService psiSearch;
     private final IndexingService indexing;
+    private final ProjectRootsService projectRoots;
 
     public static final String CONFLICT_LEFT_BEGIN = "<<<<<<<";
     public static final String CONFLICT_RIGHT_END = ">>>>>>>";
@@ -64,15 +56,16 @@ public class Utils {
 
     private Utils(Project project, IntelliJ2024PlatformFacade platform) {
         this(project, new VfsSyncService(platform), new PsiSearchService(platform),
-                new IndexingService(platform));
+                new IndexingService(platform), new ProjectRootsService(platform));
     }
 
     public Utils(Project project, VfsSyncService vfs, PsiSearchService psiSearch,
-                 IndexingService indexing) {
+                 IndexingService indexing, ProjectRootsService projectRoots) {
         this.project = project;
         this.vfs = vfs;
         this.psiSearch = psiSearch;
         this.indexing = indexing;
+        this.projectRoots = projectRoots;
     }
 
     /*
@@ -135,162 +128,10 @@ public class Utils {
 
     /*
      * Use the file path to add the source root to the module if it is not already in the module.
+     * Moved to ProjectRootsService (Week 4 / 4B); delegation kept for unmigrated operation classes.
      */
     public void addSourceRoot(String filePath, String filePackage) {
-        // There are no modules or source roots in unit test mode
-        if (ApplicationManager.getApplication().isUnitTestMode()) {
-            return;
-        }
-        boolean isTestFolder = filePath.contains("test");
-
-        String projectPath = project.getBasePath();
-        String relativePath = projectPath + "/" + filePath;
-        //relativePath = getRelativePathOfSourceRoot(relativePath, project.getName());
-        filePackage = filePackage.replaceAll("\\.", "/");
-        filePackage = filePackage.substring(0, filePackage.lastIndexOf("/"));
-        String path = "";
-        try {
-            path = relativePath.substring(0, relativePath.indexOf(filePackage));
-        }
-        catch(StringIndexOutOfBoundsException e) {
-            path = getRelativePathOfSourceRoot(relativePath, project.getName());
-        }
-        path = path.substring(0, path.lastIndexOf("/"));
-        File directory = new File(path);
-        VirtualFile sourceVirtualFile = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(directory);
-        if(sourceVirtualFile == null) {
-            return;
-        }
-        ModuleManager moduleManager = ModuleManager.getInstance(project);
-        // Get the first module that does not depend on any other modules
-        ArrayList<Module> modules = getModule(sourceVirtualFile, moduleManager.getModules(), path);
-        if(modules == null) {
-            return;
-        }
-
-
-        for(Module module : modules) {
-            AtomicReference<ModifiableRootModel> rootModel = new AtomicReference<>();
-            ReadAction.run(() -> {
-                rootModel.set(ModuleRootManager.getInstance(module).getModifiableModel());
-            });
-            directory = new File(Objects.requireNonNull(PathMacroUtil.getModuleDir(module.getModuleFilePath())));
-            VirtualFile moduleVirtualFile = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(directory);
-            if(moduleVirtualFile == null) {
-                try {
-                    if(sourceVirtualFile.getCanonicalPath().contains(directory.getCanonicalPath())) {
-                        VirtualFile tempVirtualFile = sourceVirtualFile;
-                        while (!sourceVirtualFile.getCanonicalPath().equals(directory.getAbsolutePath())) {
-                            tempVirtualFile = tempVirtualFile.getParent();
-                        }
-                        moduleVirtualFile = tempVirtualFile;
-                    }
-                } catch (IOException e) {
-                    throw new RuntimeException(e);
-                }
-            }
-            else if(!moduleVirtualFile.equals(sourceVirtualFile) &&
-                    !moduleVirtualFile.getCanonicalPath().contains(Objects.requireNonNull(sourceVirtualFile.getCanonicalPath()))) {
-                continue;
-            }
-            ContentEntry contentEntry = getContentEntry(moduleVirtualFile, rootModel.get());
-            if(contentEntry == null) {
-                continue;
-            }
-            if (checkIfSourceFolderExists(sourceVirtualFile, contentEntry)) {
-                WriteAction.run(rootModel.get()::dispose);
-                return;
-            }
-            else {
-                contentEntry.addSourceFolder(sourceVirtualFile, isTestFolder);
-                WriteAction.run(rootModel.get()::commit);
-                indexing.drainDumbTasks(project);
-                break;
-            }
-        }
-    }
-
-    /*
-     * Get the relative path of the source root folder.
-     */
-    private String getRelativePathOfSourceRoot(String relativePath, String projectName) {
-        // If the relative path contains java, then that's the source folder.
-        if(relativePath.contains("java/")) {
-            return relativePath.substring(0, relativePath.lastIndexOf("java/") + 4);
-        }
-        if(relativePath.contains("resources/")) {
-            return relativePath.substring(0, relativePath.lastIndexOf("resources/") + 9);
-        }
-        // Get the project name
-        String temp = relativePath.substring(relativePath.indexOf(projectName) + projectName.length());
-        // If the relative path contains the project name a second time, use that as a source folder.
-        if(temp.contains(projectName)) {
-            return relativePath.substring(0, relativePath.lastIndexOf(projectName));
-        }
-        // Otherwise return the src directory
-        else {
-            return relativePath.substring(0, relativePath.indexOf("src/") + 3);
-        }
-
-    }
-    /*
-     * Get the module that the virtual file is in.
-     */
-    private ArrayList<Module> getModule(VirtualFile virtualFile, Module[] modules, String path) {
-        ArrayList<Module> potentialModules = new ArrayList<>();
-        for(Module module : modules) {
-            VirtualFile moduleFile = module.getModuleFile();
-            String filePath = module.getModuleFilePath();
-            filePath = filePath.substring(0, filePath.lastIndexOf("/"));
-            // Return the module that we need
-            if(filePath.equals(path)) {
-                potentialModules.add(module);
-                return potentialModules;
-            }
-            if(moduleFile == null) {
-                continue;
-            }
-            VirtualFile moduleFileParent = moduleFile.getParent();
-            // Get the src directory
-            VirtualFile virtualFileParent = virtualFile.getParent();
-            // If the src directory and .iml file are in the same module
-            if(moduleFileParent.equals(virtualFileParent.getParent())) {
-                potentialModules.add(module);
-            }
-        }
-        potentialModules.addAll(Arrays.asList(modules));
-        return potentialModules;
-    }
-
-    /*
-     * Get the content entry in the specified module.
-     */
-    private ContentEntry getContentEntry(VirtualFile moduleVirtualFile, ModifiableRootModel rootModel) {
-        for(ContentEntry contentEntry : rootModel.getContentEntries()) {
-            if(contentEntry == null) {
-                continue;
-            }
-            if(contentEntry.getFile() == null) {
-                continue;
-            }
-            if(contentEntry.getFile().equals(moduleVirtualFile)) {
-                return contentEntry;
-            }
-        }
-        return null;
-    }
-
-    /*
-     * Check if the virtual file already exists as a source folder to avoid unnecessary indexing.
-     */
-    private boolean checkIfSourceFolderExists(VirtualFile sourceVirtualFile, ContentEntry contentEntry) {
-        VirtualFile[] sourceFolderFiles = contentEntry.getSourceFolderFiles();
-        for(VirtualFile sourceFolderFile : sourceFolderFiles) {
-            if(sourceVirtualFile.equals(sourceFolderFile)) {
-                return true;
-            }
-        }
-        return false;
+        projectRoots.addSourceRoot(project, filePath, filePackage);
     }
 
     public static void reparsePsiFiles(Project project) {

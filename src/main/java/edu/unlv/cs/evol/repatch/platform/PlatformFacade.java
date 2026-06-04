@@ -67,6 +67,28 @@ public interface PlatformFacade {
      */
     void saveAllDocuments();
 
+    /** Run {@code action} inside a plain read action (no smart-mode wait). */
+    <T> T runReadAction(Supplier<T> action);
+
+    /** Run {@code action} inside a plain write action (no command wrapping). */
+    void runWriteAction(Runnable action);
+
+    /**
+     * Run {@code action} on the EDT and wait for it. IntelliJ refactoring
+     * processors schedule themselves this way; from the EDT-dispatched
+     * headless path the call is synchronous and does not deadlock.
+     */
+    void invokeAndWait(Runnable action);
+
+    /**
+     * Close the usage view a just-executed rename/move refactoring may have
+     * opened. Interactive-IDE residue; a no-op when nothing is open.
+     */
+    void closeActiveUsageView(Project project);
+
+    /** True under IntelliJ's unit-test application; guards module/root math. */
+    boolean isUnitTestMode();
+
     /**
      * Evaluate {@code computation} inside a read action, waiting for smart
      * mode first if the index is dumb. This is the correct primitive for
