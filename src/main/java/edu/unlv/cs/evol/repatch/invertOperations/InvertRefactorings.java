@@ -78,8 +78,8 @@ public class InvertRefactorings {
             case RENAME_CLASS:
             case MOVE_CLASS:
             case MOVE_RENAME_CLASS:
-                return RefactoringOperation.legacy(description,
-                        () -> new InvertMoveRenameClass(project).invertMoveRenameClass(refactoringObject));
+                // Migrated onto the 4A contract: implements RefactoringOperation directly.
+                return new InvertMoveRenameClass(refactoringObject);
             case RENAME_METHOD:
             case MOVE_OPERATION:
             case MOVE_AND_RENAME_OPERATION:
