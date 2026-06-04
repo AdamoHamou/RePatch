@@ -1,9 +1,11 @@
 package edu.unlv.cs.evol.repatch.platform;
 
+import com.intellij.ide.IdeEventQueue;
 import com.intellij.ide.impl.ProjectUtil;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.application.WriteAction;
+import com.intellij.openapi.project.IndexNotReadyException;
 import com.intellij.openapi.command.WriteCommandAction;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
@@ -47,14 +49,62 @@ public final class IntelliJ2024PlatformFacade implements PlatformFacade {
         return ProjectUtil.openOrImport(path, null, false);
     }
 
+    /** Upper bound on one smart-mode wait; the pipeline logs and proceeds past it. */
+    private static final long SMART_WAIT_DEADLINE_MS = 120_000;
+
     @Override
     public void waitForSmartMode(Project project) {
-        if (DumbService.isDumb(project)) {
-            // From the EDT, runWhenSmart + .get() deadlocks because the smart
-            // callback also targets the EDT. completeJustSubmittedTasks only
-            // drains already-submitted indexing work, but that is what the
-            // existing pipeline depends on and matches the prior behavior.
-            DumbService.getInstance(project).completeJustSubmittedTasks();
+        if (!ApplicationManager.getApplication().isDispatchThread()) {
+            DumbService.getInstance(project).waitForSmartMode();
+            return;
+        }
+        pumpEventsUntilSmart(project);
+    }
+
+    /**
+     * Reach smart mode from the EDT, where every blocking primitive is
+     * either a deadlock or a no-op:
+     *
+     *  - {@code runWhenSmart} + {@code Future.get()} deadlocks (the callback
+     *    targets the EDT we are blocking);
+     *  - {@code DumbService.waitForSmartMode} asserts off-EDT;
+     *  - {@code runReadActionInSmartMode} silently degrades to an immediate
+     *    read when called on the EDT, because it cannot wait there;
+     *  - {@code completeJustSubmittedTasks} alone drains only the dumb tasks
+     *    submitted so far.
+     *
+     * The headless pipeline's {@code main} occupies the EDT for the whole
+     * run, so indexing work queued via {@code invokeLater} (task
+     * submission, dumb-mode exit events) can never execute behind it. The
+     * only correct EDT shape is to pump the event queue — letting the
+     * queued indexing machinery actually run — and drain submitted dumb
+     * tasks, until the project reports smart. {@code IdeEventQueue} is a
+     * platform-internal surface, accepted here for the same reason as
+     * {@code ide.impl.ProjectUtil}: there is no public-API equivalent for
+     * this headless-on-EDT situation, and the coupling is confined to this
+     * class.
+     */
+    private void pumpEventsUntilSmart(Project project) {
+        DumbService dumbService = DumbService.getInstance(project);
+        long deadline = System.currentTimeMillis() + SMART_WAIT_DEADLINE_MS;
+        while (DumbService.isDumb(project)) {
+            if (System.currentTimeMillis() > deadline) {
+                System.out.println("[PlatformFacade] project still dumb after "
+                        + SMART_WAIT_DEADLINE_MS + "ms of event pumping; proceeding anyway");
+                return;
+            }
+            IdeEventQueue.getInstance().flushQueue();
+            dumbService.completeJustSubmittedTasks();
+            if (DumbService.isDumb(project)) {
+                // Indexing is proceeding on background threads; yield briefly
+                // instead of spinning the EDT hot.
+                try {
+                    Thread.sleep(10);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
         }
     }
 
@@ -113,16 +163,32 @@ public final class IntelliJ2024PlatformFacade implements PlatformFacade {
     }
 
     /**
-     * {@code runReadActionInSmartMode} is the platform-blessed way to do a
-     * PSI read that must not observe a dumb index: synchronous, safe from
-     * the EDT (it drains submitted dumb tasks rather than scheduling a
-     * smart-mode callback that could never run), and it wraps the
-     * computation in a read action. Do not replace this with
-     * {@code runWhenSmart} + {@code Future.get()} — that deadlocks on the
-     * EDT-dispatched headless path.
+     * Off the EDT, {@code DumbService.runReadActionInSmartMode} is the
+     * platform-blessed synchronous smart read. On the EDT it cannot wait
+     * and silently degrades to an immediate read — which is how the
+     * pipeline's post-checkout reads kept hitting
+     * {@code IndexNotReadyException} even through this method — so the EDT
+     * branch pumps the event queue to smart mode first and retries the
+     * bounded read if dumb mode is re-entered mid-computation.
      */
     @Override
     public <T> T runInSmartReadAction(Project project, Supplier<T> computation) {
-        return DumbService.getInstance(project).runReadActionInSmartMode(computation::get);
+        if (!ApplicationManager.getApplication().isDispatchThread()) {
+            return DumbService.getInstance(project).runReadActionInSmartMode(computation::get);
+        }
+        int attempt = 0;
+        while (true) {
+            pumpEventsUntilSmart(project);
+            try {
+                return ReadAction.compute(computation::get);
+            } catch (IndexNotReadyException e) {
+                // Dumb mode re-entered between the wait and the read; pump
+                // again. Give up after a few rounds rather than loop forever
+                // against a wedged indexer.
+                if (++attempt >= 5) {
+                    throw e;
+                }
+            }
+        }
     }
 }
