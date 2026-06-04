@@ -4,7 +4,10 @@ import edu.unlv.cs.evol.repatch.refactoringObjects.typeObjects.MethodSignatureOb
 import edu.unlv.cs.evol.repatch.refactoringObjects.typeObjects.ParameterObject;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.vfs.LocalFileSystem;
+import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.psi.JavaPsiFacade;
+import com.intellij.psi.PsiManager;
 import com.intellij.psi.PsiClass;
 import com.intellij.psi.PsiField;
 import com.intellij.psi.PsiFile;
@@ -57,6 +60,14 @@ public final class PsiSearchService {
         return platform.runInSmartReadAction(project, () -> {
             PsiClass psiClass = JavaPsiFacade.getInstance(project)
                     .findClass(className, GlobalSearchScope.allScope(project));
+            // The 2024 platform scans changed files in smart mode, so right
+            // after a checkout the indexes can be silently stale: findClass
+            // and even FilenameIndex miss files that are on disk. We know the
+            // exact relative path, so resolve through the VFS directly —
+            // no index involved.
+            if (psiClass == null) {
+                psiClass = findClassByVfsPathInReadAction(project, filePath, className);
+            }
             // If the class isn't found, there might not have been a gradle file
             // and we need to find the class another way
             if (psiClass == null) {
@@ -64,6 +75,27 @@ public final class PsiSearchService {
             }
             return psiClass;
         });
+    }
+
+    /**
+     * Resolve a class by parsing the file at the known project-relative
+     * path. Index-independent; works while scanning/indexing is still
+     * incorporating a checkout's changes.
+     */
+    private static PsiClass findClassByVfsPathInReadAction(Project project, String filePath, String qualifiedClass) {
+        String basePath = project.getBasePath();
+        if (basePath == null || filePath == null) {
+            return null;
+        }
+        VirtualFile virtualFile = LocalFileSystem.getInstance().findFileByPath(basePath + "/" + filePath);
+        if (virtualFile == null) {
+            return null;
+        }
+        PsiFile psiFile = PsiManager.getInstance(project).findFile(virtualFile);
+        if (!(psiFile instanceof PsiJavaFile)) {
+            return null;
+        }
+        return matchClassInFile((PsiJavaFile) psiFile, qualifiedClass);
     }
 
     /**
@@ -80,8 +112,14 @@ public final class PsiSearchService {
      * Formerly {@code Utils.getPsiClassByFilePath}.
      */
     public PsiClass findClassByFilePath(Project project, String filePath, String qualifiedClass) {
-        return platform.runInSmartReadAction(project,
-                () -> findClassByFilePathInReadAction(project, filePath, qualifiedClass));
+        return platform.runInSmartReadAction(project, () -> {
+            // Index-independent direct path resolution first; see findClass.
+            PsiClass psiClass = findClassByVfsPathInReadAction(project, filePath, qualifiedClass);
+            if (psiClass == null) {
+                psiClass = findClassByFilePathInReadAction(project, filePath, qualifiedClass);
+            }
+            return psiClass;
+        });
     }
 
     /** Body of {@link #findClassByFilePath}; must run inside a smart read action. */
@@ -100,35 +138,43 @@ public final class PsiSearchService {
             if (!classPath.contains(filePath)) {
                 continue;
             }
-            PsiJavaFile psiFile = (PsiJavaFile) file;
-            // Get the classes in the file
-            PsiClass[] jClasses = psiFile.getClasses();
-            for (PsiClass it : jClasses) {
-                // Find the class that the refactoring happens in
-                if (Objects.equals(it.getQualifiedName(), qualifiedClass)) {
+            PsiClass match = matchClassInFile((PsiJavaFile) file, qualifiedClass);
+            if (match != null) {
+                return match;
+            }
+        }
+        return null;
+    }
+
+    /** Find {@code qualifiedClass} among a file's classes and inner classes. */
+    private static PsiClass matchClassInFile(PsiJavaFile psiFile, String qualifiedClass) {
+        // Get the classes in the file
+        PsiClass[] jClasses = psiFile.getClasses();
+        for (PsiClass it : jClasses) {
+            // Find the class that the refactoring happens in
+            if (Objects.equals(it.getQualifiedName(), qualifiedClass)) {
+                return it;
+            }
+            // Need to update tests to remove this
+            if (ApplicationManager.getApplication().isUnitTestMode()) {
+                if (qualifiedClass.contains(Objects.requireNonNull(it.getName()))) {
                     return it;
-                }
-                // Need to update tests to remove this
-                if (ApplicationManager.getApplication().isUnitTestMode()) {
-                    if (qualifiedClass.contains(Objects.requireNonNull(it.getName()))) {
-                        return it;
-                    }
-                }
-                PsiClass[] innerClasses = it.getInnerClasses();
-                for (PsiClass innerIt : innerClasses) {
-                    if (Objects.equals(innerIt.getQualifiedName(), qualifiedClass)) {
-                        return innerIt;
-                    }
                 }
             }
-            for (PsiClass it : jClasses) {
-                String qName = it.getQualifiedName();
-                assert qName != null;
-                qName = qName.substring(qName.lastIndexOf(".") + 1);
-                String otherName = qualifiedClass.substring(qualifiedClass.lastIndexOf(".") + 1);
-                if (Objects.equals(qName, otherName)) {
-                    return it;
+            PsiClass[] innerClasses = it.getInnerClasses();
+            for (PsiClass innerIt : innerClasses) {
+                if (Objects.equals(innerIt.getQualifiedName(), qualifiedClass)) {
+                    return innerIt;
                 }
+            }
+        }
+        for (PsiClass it : jClasses) {
+            String qName = it.getQualifiedName();
+            assert qName != null;
+            qName = qName.substring(qName.lastIndexOf(".") + 1);
+            String otherName = qualifiedClass.substring(qualifiedClass.lastIndexOf(".") + 1);
+            if (Objects.equals(qName, otherName)) {
+                return it;
             }
         }
         return null;

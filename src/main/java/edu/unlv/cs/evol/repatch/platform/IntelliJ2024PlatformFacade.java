@@ -87,25 +87,29 @@ public final class IntelliJ2024PlatformFacade implements PlatformFacade {
     private void pumpEventsUntilSmart(Project project) {
         DumbService dumbService = DumbService.getInstance(project);
         long deadline = System.currentTimeMillis() + SMART_WAIT_DEADLINE_MS;
-        while (DumbService.isDumb(project)) {
+        // Flush at least once before trusting isDumb: a dumb-mode start may
+        // be sitting in the queue, not yet dispatched, in which case the
+        // project still reports smart against a stale index.
+        do {
+            IdeEventQueue.getInstance().flushQueue();
+            dumbService.completeJustSubmittedTasks();
+            if (!DumbService.isDumb(project)) {
+                return;
+            }
             if (System.currentTimeMillis() > deadline) {
                 System.out.println("[PlatformFacade] project still dumb after "
                         + SMART_WAIT_DEADLINE_MS + "ms of event pumping; proceeding anyway");
                 return;
             }
-            IdeEventQueue.getInstance().flushQueue();
-            dumbService.completeJustSubmittedTasks();
-            if (DumbService.isDumb(project)) {
-                // Indexing is proceeding on background threads; yield briefly
-                // instead of spinning the EDT hot.
-                try {
-                    Thread.sleep(10);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return;
-                }
+            // Indexing is proceeding on background threads; yield briefly
+            // instead of spinning the EDT hot.
+            try {
+                Thread.sleep(10);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             }
-        }
+        } while (true);
     }
 
     @Override
