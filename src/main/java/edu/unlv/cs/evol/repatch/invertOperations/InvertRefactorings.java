@@ -9,7 +9,6 @@ import edu.unlv.cs.evol.repatch.utils.Utils;
 import com.intellij.openapi.project.Project;
 
 import java.util.ArrayList;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Dispatcher for the invert flow. Each refactoring is routed through the
@@ -29,8 +28,7 @@ public class InvertRefactorings {
 
         int failedRefactorings = 0;
         // Iterate through the list of refactorings and undo each one
-        for (int i = 0; i < refactoringObjects.size(); i++) {
-            RefactoringObject refactoringObject = refactoringObjects.get(i);
+        for (RefactoringObject refactoringObject : refactoringObjects) {
             long time2 = System.currentTimeMillis();
             // If it has been 14 minutes, it will take more than 15 minutes to complete RePatch
             if ((time2 - time) > 780000) {
@@ -40,10 +38,7 @@ public class InvertRefactorings {
                 return failedRefactorings;
             }
 
-            // InvertExtractMethod may hand back a replacement refactoring
-            // object that has to take the original's place in the list.
-            AtomicReference<RefactoringObject> replacement = new AtomicReference<>();
-            RefactoringOperation operation = operationFor(refactoringObject, project, replacement);
+            RefactoringOperation operation = operationFor(refactoringObject, project);
             if (operation == null) {
                 // Refactoring types outside the supported families.
                 continue;
@@ -57,9 +52,6 @@ public class InvertRefactorings {
                     result.getFailure().printStackTrace();
                 }
             }
-            if (replacement.get() != null) {
-                refactoringObjects.set(i, replacement.get());
-            }
         }
         // Save all of the refactoring changes from memory onto disk
         context.getPlatform().saveAllDocuments();
@@ -70,8 +62,7 @@ public class InvertRefactorings {
      * Map a refactoring object to its inverse operation. Returns null for
      * refactoring types RePatch does not invert.
      */
-    private static RefactoringOperation operationFor(RefactoringObject refactoringObject, Project project,
-                                                     AtomicReference<RefactoringObject> replacement) {
+    private static RefactoringOperation operationFor(RefactoringObject refactoringObject, Project project) {
         String description = "invert " + refactoringObject.getRefactoringType()
                 + " (" + refactoringObject.getRefactoringDetail() + ")";
         switch (refactoringObject.getRefactoringType()) {
@@ -86,8 +77,11 @@ public class InvertRefactorings {
                 // Migrated onto the 4A contract: implements RefactoringOperation directly.
                 return new InvertMoveRenameMethod(refactoringObject);
             case EXTRACT_OPERATION:
-                return RefactoringOperation.legacy(description,
-                        () -> replacement.set(new InvertExtractMethod(project).invertExtractMethod(refactoringObject)));
+                // Migrated onto the 4A contract. The old code returned a
+                // "replacement" object for the list, but it was always the
+                // same mutated instance — the surrounding-element pointers
+                // and thrown-exception info are recorded in place.
+                return new InvertExtractMethod(refactoringObject);
             case INLINE_OPERATION:
                 return RefactoringOperation.legacy(description,
                         () -> new InvertInlineMethod(project).invertInlineMethod(refactoringObject));

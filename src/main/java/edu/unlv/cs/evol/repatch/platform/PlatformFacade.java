@@ -1,5 +1,6 @@
 package edu.unlv.cs.evol.repatch.platform;
 
+import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.project.Project;
 
 import java.nio.file.Path;
@@ -88,6 +89,13 @@ public interface PlatformFacade {
 
     /** True under IntelliJ's unit-test application; guards module/root math. */
     boolean isUnitTestMode();
+
+    /**
+     * The focused text editor, or {@code null} when none is open (the
+     * normal case on the headless pipeline). Inline processors accept the
+     * null.
+     */
+    Editor getSelectedTextEditor(Project project);
 
     /**
      * Evaluate {@code computation} inside a read action, waiting for smart

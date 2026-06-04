@@ -5,7 +5,9 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.application.WriteAction;
 import com.intellij.openapi.command.WriteCommandAction;
+import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
+import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.project.DumbService;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.VirtualFileManager;
@@ -103,6 +105,11 @@ public final class IntelliJ2024PlatformFacade implements PlatformFacade {
     @Override
     public boolean isUnitTestMode() {
         return ApplicationManager.getApplication().isUnitTestMode();
+    }
+
+    @Override
+    public Editor getSelectedTextEditor(Project project) {
+        return FileEditorManager.getInstance(project).getSelectedTextEditor();
     }
 
     /**
