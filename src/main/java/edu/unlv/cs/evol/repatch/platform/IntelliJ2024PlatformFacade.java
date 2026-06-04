@@ -8,6 +8,7 @@ import com.intellij.openapi.vfs.VirtualFileManager;
 import com.intellij.psi.PsiDocumentManager;
 
 import java.nio.file.Path;
+import java.util.function.Supplier;
 
 /**
  * Production PlatformFacade for IntelliJ 2024.3.x running headlessly under
@@ -63,5 +64,19 @@ public final class IntelliJ2024PlatformFacade implements PlatformFacade {
     @Override
     public void runWriteCommand(Project project, Runnable action) {
         WriteCommandAction.runWriteCommandAction(project, action);
+    }
+
+    /**
+     * {@code runReadActionInSmartMode} is the platform-blessed way to do a
+     * PSI read that must not observe a dumb index: synchronous, safe from
+     * the EDT (it drains submitted dumb tasks rather than scheduling a
+     * smart-mode callback that could never run), and it wraps the
+     * computation in a read action. Do not replace this with
+     * {@code runWhenSmart} + {@code Future.get()} — that deadlocks on the
+     * EDT-dispatched headless path.
+     */
+    @Override
+    public <T> T runInSmartReadAction(Project project, Supplier<T> computation) {
+        return DumbService.getInstance(project).runReadActionInSmartMode(computation::get);
     }
 }

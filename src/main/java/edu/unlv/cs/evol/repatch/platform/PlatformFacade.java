@@ -3,6 +3,7 @@ package edu.unlv.cs.evol.repatch.platform;
 import com.intellij.openapi.project.Project;
 
 import java.nio.file.Path;
+import java.util.function.Supplier;
 
 /**
  * Single seam between RePatch's production code and the IntelliJ runtime.
@@ -58,4 +59,21 @@ public interface PlatformFacade {
      * defers to {@code WriteCommandAction.runWriteCommandAction}.
      */
     void runWriteCommand(Project project, Runnable action);
+
+    /**
+     * Evaluate {@code computation} inside a read action, waiting for smart
+     * mode first if the index is dumb. This is the correct primitive for
+     * every PSI read on the headless path: the pipeline runs immediately
+     * after a git checkout, so the index is routinely dumb and a bare
+     * {@code JavaPsiFacade.findClass} throws {@code IndexNotReadyException}.
+     *
+     * The 2024 implementation defers to
+     * {@code DumbService.runReadActionInSmartMode(Computable)}, which is
+     * synchronous and EDT-safe: in smart mode it just runs the computation
+     * under a read action; in dumb mode it waits for the index (draining
+     * submitted dumb tasks when called from the EDT) before computing.
+     * Unlike {@code runWhenSmart} + {@code Future.get()}, it cannot deadlock
+     * from the EDT-dispatched {@code ApplicationStarter} entry point.
+     */
+    <T> T runInSmartReadAction(Project project, Supplier<T> computation);
 }
