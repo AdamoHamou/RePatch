@@ -212,8 +212,8 @@ Clone this project (`git clone https://github.com/unlv-evol/Repatch.git`) and op
    </p>
 **NB: Running the entire experiment takes more than 10 hour to complete. For this reason, we provide one source -> target variant (apache/kakfa -> linkedin/kafka) and 5 bugfix patches (pull requests), alongside the full dataset, to facilitate quick testing of the tool/experiment. Both the test and full projects are located in: `src/main/resources` (sample_data and completed_data) directory**.
 
-3. RePatch will automatically clone the target variant and add the remote source variant. Once this is done, stop the
-   running project and open the project being integrated - specified in the `-PevaluationProject`(for our case, it **kafka**) with the IntelliJ IDEA in a new window. This project will be located in the directory specified in the `-PdataPath` -- for our case, it will be located in **/repatch_integration_projects**
+3. RePatch will automatically clone the target variant (pinned to the branch and SHA listed in `sample_data/repatch_integration_projects`) and add the remote source variant. The checkout directory is named `<RepoName>-<Owner>`, derived from the target variant's clone URL — for our case `https://github.com/linkedin/kafka` becomes **kafka-linkedin**. Once this is done, stop the
+   running project and open the cloned project with IntelliJ IDEA in a new window. It will be located under the directory specified in `-PdataPath` -- for our case, **~/repatch-integration-projects/kafka-linkedin**
 
 4. Wait for IntelliJ to build the cloned project, then close it.
 
