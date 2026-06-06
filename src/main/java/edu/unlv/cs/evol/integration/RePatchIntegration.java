@@ -236,9 +236,18 @@ public class RePatchIntegration {
                 String[] data = {rightCommit, leftCommit, baseCommit, prMergeAuthor, prMergeAuthorEmail, String.valueOf(prTimeStamp)};
 
 //                evaluateMergeScenario(values, repo, proj);
-                evaluateMergeScenario(data, repo, proj, patch);
-                patch.setDone();
-                patch.saveIt();
+                // One failing PR must not abort the remaining PRs (a server
+                // run once died on PR 1/5 and left the DB empty). Classify the
+                // failure, leave the patch not-done, and continue.
+                try {
+                    evaluateMergeScenario(data, repo, proj, patch);
+                    patch.setDone();
+                    patch.saveIt();
+                } catch (Exception | AssertionError e) {
+                    System.out.println("[Pipeline] SCENARIO_FAILED PR " + values[2] + " — "
+                            + e.getClass().getSimpleName() + ": " + e.getMessage());
+                    e.printStackTrace();
+                }
             }
         }
 

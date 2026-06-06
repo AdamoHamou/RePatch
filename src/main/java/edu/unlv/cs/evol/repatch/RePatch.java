@@ -157,6 +157,16 @@ public class RePatch extends AnAction {
         int failedRefactorings = InvertRefactorings.invertRefactorings(rightRefs, executionContext);
         vfs.commitAndReparse(project);
         String rightUndoCommit = gitUtils.addAndCommit();
+        // No commit hash means the inverted right side could not be committed
+        // (e.g. missing git identity on a fresh machine). Abort this scenario
+        // with a classified log line instead of cherry-picking null — the
+        // caller treats a null return as a failed scenario and moves on.
+        if (rightUndoCommit == null) {
+            Utils.log(project.getName(), "[GitPipeline] SCENARIO_ABORTED — committing the inverted right side"
+                    + " produced no commit for " + leftCommit + " and " + rightCommit
+                    + "; check git identity (git config user.name / user.email)");
+            return null;
+        }
         gitUtils.checkout(leftCommit);
         // Update the PSI classes after the commit
         vfs.commitAndReparse(project);

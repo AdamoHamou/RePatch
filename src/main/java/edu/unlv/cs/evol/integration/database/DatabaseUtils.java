@@ -107,6 +107,10 @@ public class DatabaseUtils {
     public static String getDatabaseUrl() {
         return DB_URL;
     }
+    /** Server-only URL (no schema) — for reachability checks before the schema exists. */
+    public static String getDatabaseUrlWithoutDbName() {
+        return DB_URL_WITHOUT_DBNAME;
+    }
     public static String getDatabaseUser() {
         return DB_USER;
     }

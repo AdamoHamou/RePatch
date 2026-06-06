@@ -98,6 +98,13 @@ public class GitUtils {
     }
 
     public boolean cherryPick(String rightCommit) {
+        // GitLineHandler.addParameters(null) NPEs inside the worker thread and
+        // the null result NPEs again on the caller's thread — fail fast with a
+        // message that names the actual problem instead.
+        if (rightCommit == null || rightCommit.trim().isEmpty()) {
+            throw new IllegalStateException("[GitPipeline] CHERRY_PICK_ABORTED — no commit to cherry-pick"
+                    + " (did the preceding git commit fail?)");
+        }
         System.out.println("-> Try cherry picking after undoing refactoring.......");
         AtomicReference<GitCommandResult> gitCommandResult = new AtomicReference<>();
 
@@ -253,16 +260,29 @@ class DoGitCommit implements Runnable {
         // Add message to commit to clearly show it's RePatch step
         lineHandler.addParameters("-m", "RePatch");
         GitCommandResult result = Git.getInstance().runCommand(lineHandler);
+        // A failed commit (no git identity on a fresh machine, nothing to
+        // commit, ...) used to throw IndexOutOfBoundsException on the empty
+        // output here, killing this thread silently and cascading into a
+        // cherryPick(null) NPE downstream. Classify it and leave commit null.
+        if (!result.success() || result.getOutput().isEmpty()) {
+            System.out.println("[GitPipeline] COMMIT_FAILED — git commit produced no commit: "
+                    + result.getErrorOutputAsJoinedString());
+            return;
+        }
         String res = result.getOutput().get(0);
         // get the commit hash from the output message
-        String commit;
-        if(res.contains("]")) {
-            commit = res.substring(res.indexOf("HEAD") + 1, res.indexOf("]") - 1);
+        try {
+            String commit;
+            if(res.contains("]")) {
+                commit = res.substring(res.indexOf("HEAD") + 1, res.indexOf("]") - 1);
+            }
+            else {
+                commit = res.substring(res.lastIndexOf(" ") + 1, res.length()-1);
+            }
+            this.commit = commit.substring(commit.lastIndexOf(" ") + 1);
+        } catch (RuntimeException e) {
+            System.out.println("[GitPipeline] COMMIT_FAILED — could not parse commit hash from: " + res);
         }
-        else {
-            commit = res.substring(res.lastIndexOf(" ") + 1, res.length()-1);
-        }
-        this.commit = commit.substring(commit.lastIndexOf(" ") + 1);
     }
 
     public String getCommit() {

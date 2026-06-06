@@ -60,6 +60,20 @@ MYSQL_PWD=repatch mysqldump -h 127.0.0.1 -u repatch \
   refactoring_aware_integration_repatch > repatch-results-$(date +%F).sql
 ```
 
+## Provisioning a fresh machine
+
+The pipeline commits and cherry-picks in the evaluation checkout, so **git
+needs an identity** or every scenario fails:
+
+```sh
+git config --global user.name  "RePatch Pipeline"
+git config --global user.email "repatch@evol-lab.local"
+```
+
+A startup preflight verifies git identity and MySQL reachability and fails
+fast with the exact fix when either is missing. The evaluation checkout
+itself is cloned automatically on first run.
+
 ## Running the pipeline without the IDE
 
 ```sh

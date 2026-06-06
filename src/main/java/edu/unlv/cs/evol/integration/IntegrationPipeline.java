@@ -28,6 +28,7 @@ public class IntegrationPipeline implements ApplicationStarter {
         try {
             String mode = args.get(1);
             if(mode.equals("integration")) {
+                PipelinePreflight.run();
                 DatabaseUtils.createDatabase(true);
                 String path = System.getProperty("user.home") +"/" + args.get(2);
                 String projectName = args.get(3);
