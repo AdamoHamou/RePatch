@@ -260,13 +260,25 @@ class DoGitCommit implements Runnable {
         // Add message to commit to clearly show it's RePatch step
         lineHandler.addParameters("-m", "RePatch");
         GitCommandResult result = Git.getInstance().runCommand(lineHandler);
-        // A failed commit (no git identity on a fresh machine, nothing to
-        // commit, ...) used to throw IndexOutOfBoundsException on the empty
-        // output here, killing this thread silently and cascading into a
-        // cherryPick(null) NPE downstream. Classify it and leave commit null.
+        // A failed commit (no git identity on a fresh machine, ...) used to
+        // throw IndexOutOfBoundsException on the empty output here, killing
+        // this thread silently and cascading into a cherryPick(null) NPE
+        // downstream. Classify it and leave commit null.
         if (!result.success() || result.getOutput().isEmpty()) {
-            System.out.println("[GitPipeline] COMMIT_FAILED — git commit produced no commit: "
-                    + result.getErrorOutputAsJoinedString());
+            String detail = String.join("\n", result.getOutput()) + "\n"
+                    + result.getErrorOutputAsJoinedString();
+            // "Nothing to commit" is a legitimate outcome, not a failure: when
+            // a side has zero applicable refactorings (e.g. squash-merge PRs
+            // whose right-side detect finds nothing) the state we want IS the
+            // current HEAD. The pre-Week-5 parser got this right by accident,
+            // extracting the sha from git's "HEAD detached at <sha>" status
+            // line; resolve HEAD deliberately instead.
+            if (detail.contains("nothing to commit") || detail.contains("nothing added to commit")) {
+                this.commit = resolveHead();
+                System.out.println("[GitPipeline] COMMIT_NOOP — nothing to commit; using HEAD " + this.commit);
+                return;
+            }
+            System.out.println("[GitPipeline] COMMIT_FAILED — git commit produced no commit: " + detail.trim());
             return;
         }
         String res = result.getOutput().get(0);
@@ -287,6 +299,19 @@ class DoGitCommit implements Runnable {
 
     public String getCommit() {
         return commit;
+    }
+
+    /** @return the full sha of the current HEAD, or null when even that fails */
+    private String resolveHead() {
+        GitLineHandler revParse = new GitLineHandler(project, repo.getRoot(), GitCommand.REV_PARSE);
+        revParse.addParameters("HEAD");
+        GitCommandResult result = Git.getInstance().runCommand(revParse);
+        if (!result.success() || result.getOutput().isEmpty()) {
+            System.out.println("[GitPipeline] COMMIT_FAILED — could not resolve HEAD: "
+                    + result.getErrorOutputAsJoinedString());
+            return null;
+        }
+        return result.getOutput().get(0).trim();
     }
 }
 
