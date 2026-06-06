@@ -6,6 +6,7 @@ import edu.unlv.cs.evol.repatch.RePatch;
 import edu.unlv.cs.evol.repatch.refactoringObjects.RefactoringObject;
 import edu.unlv.cs.evol.integration.utils.EvaluationUtils;
 import edu.unlv.cs.evol.integration.utils.GitUtils;
+import edu.unlv.cs.evol.integration.utils.RepoNaming;
 import edu.unlv.cs.evol.integration.utils.Utils;
 import edu.unlv.cs.evol.repatch.platform.IntelliJ2024PlatformFacade;
 import edu.unlv.cs.evol.repatch.platform.PlatformFacade;
@@ -29,8 +30,6 @@ import org.apache.commons.lang3.tuple.Pair;
 import org.eclipse.jgit.api.FetchCommand;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.RemoteAddCommand;
-import org.eclipse.jgit.api.errors.GitAPIException;
-import org.eclipse.jgit.api.errors.JGitInternalException;
 import org.eclipse.jgit.errors.LargeObjectException;
 import org.eclipse.jgit.transport.RemoteConfig;
 import org.eclipse.jgit.transport.URIish;
@@ -73,19 +72,29 @@ public class RePatchIntegration {
         GitRepository repo;
         Project proj = null;
         for (String line : lines) {
-            // split mainline repo and variant fork repo
+            if (line == null || line.trim().isEmpty()) {
+                continue;
+            }
+            // mainlineUrl,variantUrl,branch,pinnedSha — the variant fork is the
+            // project patches are applied to; branch+SHA pin the evaluation state.
             String[] values = line.split(",");
-            String mainLineUrl = values[0];
+            if (values.length < 4) {
+                throw new IllegalStateException("Malformed line in sample_data/repatch_integration_projects"
+                        + " (expected mainlineUrl,variantUrl,branch,pinnedSha): " + line);
+            }
+            String mainLineUrl = values[0].trim();
             String[] mainLineUrls = mainLineUrl.split("/"); // Begin to construct the mainline repo name, e.g. kafka
             String mainLineName = mainLineUrls[mainLineUrls.length - 1];
-            String variantUrl = values[1];
+            String variantUrl = values[1].trim();
+            String branch = values[2].trim();
+            String pinnedSha = values[3].trim();
             projectUrl = variantUrl; // This is the project that we want to apply patches to.. it can be interchanged
             if (!line.contains(evaluationProject)) {
                 continue;
             }
             proj = Project.findFirst("fork_url = ?", projectUrl);
             if (proj == null) {
-                projectName = openProject(path, projectUrl, mainLineUrl).substring(1); //name of the fork repo, e.g linkedin
+                projectName = openProject(path, projectUrl, mainLineUrl, branch, pinnedSha); // checkout dir name, e.g. kafka-linkedin
                 System.out.println("Starting Project -> " + projectName);
                 proj = new Project(mainLineUrl, mainLineName, projectUrl, projectName);
                 proj.saveIt();
@@ -99,7 +108,7 @@ public class RePatchIntegration {
             } else if (proj.isDone()) {
                 continue;
             } else {
-                projectName = openProject(path, projectUrl, mainLineUrl).substring(1);
+                projectName = openProject(path, projectUrl, mainLineUrl, branch, pinnedSha);
                 System.out.println("Continuing " + projectName);
                 GitRepositoryManager repoManager = GitRepositoryManager.getInstance(project);
                 List<GitRepository> repos = repoManager.getRepositories();
@@ -110,7 +119,7 @@ public class RePatchIntegration {
                 }
             }
             System.out.println("Repository for Integration -> " + repo);
-            evaluateProject(repo, proj, projectName);
+            evaluateProject(repo, proj, projectUrl);
             proj.setDone();
             proj.saveIt();
 
@@ -167,7 +176,7 @@ public class RePatchIntegration {
 //        }
 //
 //    }
-    private void evaluateProject(GitRepository repo, Project proj, String projectName) throws Exception {
+    private void evaluateProject(GitRepository repo, Project proj, String projectUrl) throws Exception {
         URL url = IntegrationPipeline.class.getResource("/sample_data/repatch_integration_patches");
 
         InputStream inputStream = url.openStream();
@@ -183,7 +192,10 @@ public class RePatchIntegration {
         for(String line : lines) {
             String[] values = line.split(",");
 //            System.out.println("VALUES: " + Arrays.toString(values));
-            if(values[1].contains(projectName)) {
+            // Match patches by the variant fork's URL, not the checkout dir name:
+            // the dir is owner-suffixed (kafka-linkedin) and no longer a substring
+            // of the URL in the patches file.
+            if(values[1].trim().equals(projectUrl)) {
                 System.out.println(">>>>>>>>>Patch Integration " + ++i + ": PR " + values[2]+ "<<<<<<<<<<");
                 // add PR to patch table
                 Patch patch = new Patch(Integer.valueOf(values[2]),String.valueOf(values[3]),0, proj);
@@ -584,48 +596,73 @@ public class RePatchIntegration {
 
 
     /*
-     * Clone the given project.
+     * Clone the given project into the given directory and pin the checkout:
+     * create <branch> at <pinnedSha> so a fresh clone starts from exactly the
+     * state the reset script enforces on existing checkouts. We detach onto the
+     * SHA before (re)creating the branch so this also works when <branch> is
+     * the clone's default branch. A failed clone removes the partial directory
+     * so the next run can retry instead of mistaking it for a valid checkout.
      */
-    private void cloneProject(String path, String url) {
-        System.out.println("TASK: cloning project -> " + url);
-        String projectName = url.substring(url.lastIndexOf("/"));
-        String clonePath = path + projectName;
-        try {
-            Git.cloneRepository().setURI(url).setDirectory(new File(clonePath)).call();
+    private void cloneProject(File cloneDir, String url, String branch, String pinnedSha) {
+        System.out.println("TASK: cloning project -> " + url + " into " + cloneDir);
+        try (Git git = Git.cloneRepository().setURI(url).setDirectory(cloneDir).call()) {
+            git.checkout().setName(pinnedSha).call();
+            git.branchCreate().setName(branch).setStartPoint(pinnedSha).setForce(true).call();
+            git.checkout().setName(branch).call();
+            System.out.println("TASK: pinned " + branch + " at " + pinnedSha);
         }
-        catch(GitAPIException | JGitInternalException e) {
-            e.printStackTrace();
+        catch(Exception e) {
+            deleteRecursively(cloneDir);
+            throw new IllegalStateException("Failed to clone " + url + " into " + cloneDir
+                    + " (partial clone removed) — " + e.getMessage(), e);
+        }
+    }
+
+    private static void deleteRecursively(File dir) {
+        if (!dir.exists()) {
+            return;
+        }
+        try (java.util.stream.Stream<java.nio.file.Path> walk = java.nio.file.Files.walk(dir.toPath())) {
+            walk.sorted(java.util.Comparator.reverseOrder())
+                    .map(java.nio.file.Path::toFile)
+                    .forEach(File::delete);
+        } catch (IOException e) {
+            System.err.println("-> Failed to remove partial clone at " + dir + ": " + e.getMessage());
         }
     }
 
     /*
-     * Open the given project.
+     * Open the evaluation project, cloning it first when the checkout is
+     * missing. The checkout directory is owner-suffixed — <RepoName>-<Owner>,
+     * e.g. kafka-linkedin — so forks can't be confused with their mainline
+     * (see RepoNaming). Returns the directory name.
      */
-    private String openProject(String path, String url, String remoteOriginUrl) {
-        String projectName = url.substring(url.lastIndexOf("/"));
+    private String openProject(String path, String url, String remoteOriginUrl, String branch, String pinnedSha) {
+        String dirName = RepoNaming.directoryName(url);
 
         // get the remote repo name - the repo we are cherry-picking from.
-//        String remoteProjectName = remoteOriginUrl.substring(remoteOriginUrl.lastIndexOf("/"));
         String remoteProjectName = remoteOriginUrl.substring(remoteOriginUrl.lastIndexOf("/") + 1);
         remoteRepoName = remoteProjectName;
         System.out.println("-> Remote Repo Name: " + remoteProjectName);
-        File pathToProject = new File(path + projectName);
+        File pathToProject = new File(path, dirName);
+
+        if(!pathToProject.exists()) {
+            cloneProject(pathToProject, url, branch, pinnedSha);
+            // add mainLineUrl to the repo we are working with as a second remote
+            addRemote(pathToProject, remoteProjectName, remoteOriginUrl);
+        } else if (!new File(pathToProject, ".git").isDirectory()) {
+            throw new IllegalStateException(pathToProject + " exists but is not a git checkout —"
+                    + " delete it and re-run so the pipeline can clone " + url);
+        }
 
         try {
-            if(!pathToProject.exists()) {
-
-                cloneProject(path, url);
-                // add mainLineUrl to the repo we are working with as
-                addRemote(pathToProject, remoteProjectName, remoteOriginUrl);
-            }
-
             this.project = platform.openProject(pathToProject.toPath());
-
         }
         catch(Exception e) {
-            e.printStackTrace();
+            throw new IllegalStateException("Failed to open project at " + pathToProject
+                    + " — " + e.getMessage(), e);
         }
-        return projectName;
+        return dirName;
 
     }
 
