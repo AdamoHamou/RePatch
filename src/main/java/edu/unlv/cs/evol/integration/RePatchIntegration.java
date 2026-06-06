@@ -47,6 +47,7 @@ public class RePatchIntegration {
     private String remoteRepoName;
     private final PlatformFacade platform;
     private final VfsSyncService vfs;
+    private final PipelineRunResult runResult = new PipelineRunResult();
 
     public RePatchIntegration() {
         this(new IntelliJ2024PlatformFacade());
@@ -125,6 +126,8 @@ public class RePatchIntegration {
 
 
         }
+        // While Base is still open — the summary includes per-PR verdicts.
+        runResult.printSummary();
     }
 
     /*
@@ -239,14 +242,20 @@ public class RePatchIntegration {
                 // One failing PR must not abort the remaining PRs (a server
                 // run once died on PR 1/5 and left the DB empty). Classify the
                 // failure, leave the patch not-done, and continue.
+                long scenarioStart = System.currentTimeMillis();
                 try {
-                    evaluateMergeScenario(data, repo, proj, patch);
+                    PipelineRunResult.ScenarioOutcome outcome = evaluateMergeScenario(data, repo, proj, patch);
                     patch.setDone();
                     patch.saveIt();
+                    runResult.record(Integer.parseInt(values[2]), outcome,
+                            System.currentTimeMillis() - scenarioStart, null);
                 } catch (Exception | AssertionError e) {
                     System.out.println("[Pipeline] SCENARIO_FAILED PR " + values[2] + " — "
                             + e.getClass().getSimpleName() + ": " + e.getMessage());
                     e.printStackTrace();
+                    runResult.record(Integer.parseInt(values[2]), PipelineRunResult.ScenarioOutcome.FAILED,
+                            System.currentTimeMillis() - scenarioStart,
+                            e.getClass().getSimpleName() + ": " + e.getMessage());
                 }
             }
         }
@@ -301,7 +310,7 @@ public class RePatchIntegration {
      * Run RePatch, IntelliMerge, and Git on the given merge scenario.
      * Run RePatch and Git on the given merge scenario
      */
-    private void evaluateMergeScenario(String[] values, GitRepository repo,
+    private PipelineRunResult.ScenarioOutcome evaluateMergeScenario(String[] values, GitRepository repo,
                                        Project proj, Patch patch) throws VcsException {
 
         GitUtils gitUtils = new GitUtils(repo, project);
@@ -313,7 +322,7 @@ public class RePatchIntegration {
         String mergeCommitHash = values[0]; // values[1];
         MergeCommit mergeCommit = MergeCommit.findFirst("commit_hash = ?", mergeCommitHash);
         if(mergeCommit != null && mergeCommit.isDone()) {
-            return;
+            return PipelineRunResult.ScenarioOutcome.ALREADY_DONE;
         }
 
 
@@ -323,7 +332,7 @@ public class RePatchIntegration {
         String baseCommit = values[2];
         // Skip cases without a base commit
         if (baseCommit == null) {
-            return;
+            return PipelineRunResult.ScenarioOutcome.NO_BASE_COMMIT;
         }
 
         gitUtils.checkout(rightParent);
@@ -338,7 +347,7 @@ public class RePatchIntegration {
             // This should always be conflicting
             // Now we are using Git CherryPick
             //System.out.println("-> Error merging with Git CherryPick");
-            return;
+            return PipelineRunResult.ScenarioOutcome.NON_CONFLICTING;
         }
         // Set patch's is_conflicting column to true
         patch.setIsConflicting();
@@ -350,7 +359,7 @@ public class RePatchIntegration {
                     rightParent, proj, patch, values[3], values[4], Long.parseLong(values[5]));
             mergeCommit.saveIt();
         } else if (mergeCommit.isDone()) {
-            return;
+            return PipelineRunResult.ScenarioOutcome.ALREADY_DONE;
         } else if (!mergeCommit.isDone()) {
             mergeCommit.delete();
             mergeCommit = new MergeCommit(mergeCommitHash, isConflicting, leftParent,
@@ -535,6 +544,7 @@ public class RePatchIntegration {
 
         mergeCommit.setDone();
         mergeCommit.saveIt();
+        return PipelineRunResult.ScenarioOutcome.EVALUATED;
     }
 
     /*
