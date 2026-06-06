@@ -1,8 +1,5 @@
 package edu.unlv.cs.evol.integration.utils;
 
-import com.commentremover.app.CommentProcessor;
-import com.commentremover.app.CommentRemover;
-import com.commentremover.exception.CommentRemoverException;
 import edu.unlv.cs.evol.integration.data.*;
 import io.reflectoring.diffparser.api.DiffParser;
 import io.reflectoring.diffparser.api.UnifiedDiffParser;
@@ -20,8 +17,6 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.stream.Collectors;
-
-import static edu.pku.intellimerge.util.Utils.flattenString;
 
 /*
  * Contains the methods necessary to get the metrics for the integration.
@@ -547,25 +542,19 @@ public class EvaluationUtils {
     }
 
     /*
-     * Remove all comments in java files
+     * Strip ALL whitespace from a string (line breaks first, then every
+     * remaining whitespace run). Vendored verbatim from IntelliMerge 1.0.7's
+     * edu.pku.intellimerge.util.Utils#flattenString — the sole method this
+     * project used from the (malformed, 50 MB) IntelliMerge fat jar, which
+     * the IntelliJ Plugin Verifier rejects for duplicate ZIP entries.
+     * Semantics verified empirically against the original class before the
+     * jar was removed: "  a\r\nb\rc\nd\t\te  " -> "abcde" (no separators!).
+     * Conflict-block comparison depends on this exact behavior.
      */
-    public static void removeAllComments(String targetDir) {
-        try {
-            CommentRemover commentRemover =
-                    new CommentRemover.CommentRemoverBuilder()
-                            .removeJava(true)
-                            .removeTodos(true) // Remove todos
-                            .removeSingleLines(true) // Do not remove single line type comments
-                            .removeMultiLines(true) // Remove multiple type comments
-                            .preserveJavaClassHeaders(false) // Preserves class header comment
-                            .preserveCopyRightHeaders(false) // Preserves copyright comment
-                            .startExternalPath(targetDir) // Give it full path for external dir
-                            .build();
-            CommentProcessor commentProcessor = new CommentProcessor(commentRemover);
-            commentProcessor.start();
-        } catch (CommentRemoverException e) {
-            e.printStackTrace();
-        }
+    public static String flattenString(String content) {
+        return content.trim()
+                .replaceAll("\\r\\n|\\r|\\n", "")
+                .replaceAll("\\s+", "");
     }
 
     private static boolean removeMovingCausedHunks(Hunk hunk, List<Hunk> visitedHunks) {

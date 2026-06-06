@@ -1,26 +1,48 @@
-# This workflow will build a Java project with Gradle
-# For more information see: https://help.github.com/actions/language-and-framework-guides/building-and-testing-java-with-gradle
+# CI for the IntelliJ 2024 migration: compile, unit + platform-fixture
+# tests, and the IntelliJ Plugin Verifier as a mandatory gate.
+# The integration pipeline itself (runIde -Pmode=integration) needs MySQL
+# and a multi-GB evaluation checkout, so it stays a manually-run check —
+# see deploy/README.md.
 
 name: Java CI with Gradle
 
 on:
   push:
-    branches: [ master ]
+    branches: [ master, 'migration/**' ]
   pull_request:
     branches: [ master ]
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v2
-    - name: Set up JDK 11
-      uses: actions/setup-java@v1
+    - uses: actions/checkout@v4
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
       with:
-        java-version: 11
+        distribution: temurin
+        java-version: 17
+
+    - name: Set up Gradle (with caching)
+      uses: gradle/actions/setup-gradle@v4
+
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
-    - name: Build with Gradle
-      run: ./gradlew build
+
+    - name: Build
+      run: ./gradlew --no-daemon build -x test
+
+    - name: Test
+      run: ./gradlew --no-daemon test
+
+    - name: Plugin verification
+      run: ./gradlew --no-daemon verifyPlugin
+
+    - name: Upload test reports
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-reports
+        path: build/reports/tests/
