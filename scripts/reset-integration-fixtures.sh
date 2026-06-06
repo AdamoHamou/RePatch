@@ -7,36 +7,63 @@
 # from the IDE or CLI auto-resets first. Direct invocation
 # (`bash scripts/reset-integration-fixtures.sh`) also works for ad-hoc use.
 #
-# Currently hardcoded to the linkedin/kafka 5-PR fixture. If additional
-# evaluationProject targets are added, parameterize KAFKA_DIR and
-# KAFKA_PINNED_SHA via env vars or a config file.
+# Evaluation checkouts are described by
+# src/main/resources/sample_data/repatch_integration_projects
+# (mainlineUrl,variantUrl,branch,pinnedSha — one project per line). Each
+# checkout lives at ~/repatch-integration-projects/<RepoName>-<Owner>,
+# derived from the variant URL (same derivation as RepoNaming.java; keep
+# the two in sync). A missing checkout is NOT an error: the pipeline
+# clones it on first run.
 set -euo pipefail
 
-KAFKA_DIR="${HOME}/repatch-integration-projects/kafka"
-KAFKA_PINNED_SHA="31df5cec3298e31b55888307929904df83cc8753"
 DB_NAME="refactoring_aware_integration_repatch"
 DB_USER="${RPATCH_DB_USER:-repatch}"
 DB_PASS="${RPATCH_DB_PASS:-repatch}"
 DB_HOST="${RPATCH_DB_HOST:-127.0.0.1}"
+DATA_DIR="${HOME}/repatch-integration-projects"
 
 # PROJECT_ROOT is exported by the Gradle task; fall back to script-relative
 # resolution so direct invocation also finds the sandbox.
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+PROJECTS_FILE="${PROJECT_ROOT}/src/main/resources/sample_data/repatch_integration_projects"
 SANDBOX_LOCK="${PROJECT_ROOT}/.intellijPlatform/sandbox/RePatch/IC-2024.3.7/config/.lock"
 
 echo "[reset-fixtures] dropping database ${DB_NAME}"
 MYSQL_PWD="${DB_PASS}" mysql -h "${DB_HOST}" -u "${DB_USER}" \
     -e "DROP DATABASE IF EXISTS ${DB_NAME};"
 
-echo "[reset-fixtures] resetting kafka to ${KAFKA_PINNED_SHA:0:12}"
-if [ ! -d "${KAFKA_DIR}/.git" ]; then
-    echo "[reset-fixtures] FATAL: ${KAFKA_DIR} is not a git checkout" >&2
+if [ ! -f "${PROJECTS_FILE}" ]; then
+    echo "[reset-fixtures] FATAL: projects file not found: ${PROJECTS_FILE}" >&2
     exit 1
 fi
-git -C "${KAFKA_DIR}" reset --hard "${KAFKA_PINNED_SHA}" >/dev/null
 
-echo "[reset-fixtures] removing kafka/.idea and ~/results"
-rm -rf "${KAFKA_DIR}/.idea" "${HOME}/results"
+while IFS=, read -r mainline_url variant_url branch pinned_sha; do
+    # skip blank lines; require all four columns
+    [ -z "${variant_url}" ] && continue
+    if [ -z "${branch}" ] || [ -z "${pinned_sha}" ]; then
+        echo "[reset-fixtures] FATAL: malformed line in ${PROJECTS_FILE}" >&2
+        echo "[reset-fixtures]   expected mainlineUrl,variantUrl,branch,pinnedSha" >&2
+        exit 1
+    fi
+    # <RepoName>-<Owner> from the variant URL, e.g.
+    # https://github.com/linkedin/kafka -> kafka-linkedin
+    url="${variant_url%/}"; url="${url%.git}"
+    repo="${url##*/}"
+    owner_path="${url%/*}"; owner="${owner_path##*/}"
+    checkout_dir="${DATA_DIR}/${repo}-${owner}"
+
+    if [ ! -d "${checkout_dir}/.git" ]; then
+        echo "[reset-fixtures] ${checkout_dir} not present — pipeline will clone it on first run"
+        continue
+    fi
+    echo "[reset-fixtures] resetting ${repo}-${owner} to ${pinned_sha:0:12}"
+    git -C "${checkout_dir}" reset --hard "${pinned_sha}" >/dev/null
+    echo "[reset-fixtures] removing ${repo}-${owner}/.idea"
+    rm -rf "${checkout_dir}/.idea"
+done < "${PROJECTS_FILE}"
+
+echo "[reset-fixtures] removing ~/results"
+rm -rf "${HOME}/results"
 
 if [ -f "${SANDBOX_LOCK}" ]; then
     echo "[reset-fixtures] removing leftover sandbox lock"
