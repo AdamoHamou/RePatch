@@ -111,6 +111,10 @@ public class DatabaseUtils {
     public static String getDatabaseUrlWithoutDbName() {
         return DB_URL_WITHOUT_DBNAME;
     }
+    /** The JDBC driver class used for every connection in this pipeline. */
+    public static String getDatabaseDriver() {
+        return "com.mysql.jdbc.Driver";
+    }
     public static String getDatabaseUser() {
         return DB_USER;
     }
