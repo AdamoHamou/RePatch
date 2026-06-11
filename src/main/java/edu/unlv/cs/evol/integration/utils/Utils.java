@@ -3,19 +3,15 @@ package edu.unlv.cs.evol.integration.utils;
 import com.intellij.openapi.project.DumbService;
 import com.intellij.openapi.project.Project;
 import com.intellij.psi.*;
+import edu.unlv.cs.evol.repatch.utils.LoggingService;
 import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
-import java.text.SimpleDateFormat;
 import java.util.*;
 
 public class Utils {
     Project project;
-
-    private static final boolean LOG_TO_FILE  = true;
-    private static final String LOG_FILE = "log.txt";
-
 
     public Utils(Project project) {
         this.project = project;
@@ -42,38 +38,12 @@ public class Utils {
 
     }
 
+    /**
+     * Retained entry point for the existing call sites; delegates to the shared
+     * {@link LoggingService} carved out of the two {@code Utils} classes.
+     */
     public static void log(String projectName, Object message) {
-        String timeStamp = new SimpleDateFormat("MM/dd/yyyy HH:mm:ss z").format(new Date());
-        String logMessage = timeStamp + " ";
-        if (message instanceof String){
-            logMessage += (String) message;
-        } else if (message instanceof Exception) {
-            logMessage += ((Exception) message).getMessage() + "\n";
-            StringBuilder stackBuilder = new StringBuilder();
-            StackTraceElement[] stackTraceElements = ((Exception) message).getStackTrace();
-            for (int i = 0; i < stackTraceElements.length; i++) {
-                StackTraceElement stackTraceElement = stackTraceElements[i];
-                stackBuilder.append(stackTraceElement.toString());
-                if (i < stackTraceElements.length - 1) stackBuilder.append("\n");
-            }
-            logMessage += stackBuilder.toString();
-        } else {
-            logMessage = message.toString();
-        }
-        System.out.println(logMessage);
-
-        if (LOG_TO_FILE) {
-            String logPath = LOG_FILE;
-            if (projectName != null && !projectName.trim().equals("")) logPath = projectName;
-            try {
-                String path = System.getProperty("user.home") + "/temp/logs/";
-                new File(path).mkdirs();
-                Files.write(Paths.get(path + logPath), Arrays.asList(logMessage),
-                        StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-        }
+        LoggingService.log(projectName, message);
     }
 
     public static void writeContent(String path, String content) {

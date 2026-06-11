@@ -8,6 +8,7 @@ import edu.unlv.cs.evol.integration.utils.EvaluationUtils;
 import edu.unlv.cs.evol.integration.utils.GitUtils;
 import edu.unlv.cs.evol.integration.utils.RepoNaming;
 import edu.unlv.cs.evol.integration.utils.Utils;
+import edu.unlv.cs.evol.repatch.utils.LoggingService;
 import edu.unlv.cs.evol.repatch.platform.IntelliJ2024PlatformFacade;
 import edu.unlv.cs.evol.repatch.platform.PlatformFacade;
 import edu.unlv.cs.evol.repatch.platform.VfsSyncService;
@@ -243,6 +244,13 @@ public class RePatchIntegration {
                 // run once died on PR 1/5 and left the DB empty). Classify the
                 // failure, leave the patch not-done, and continue.
                 long scenarioStart = System.currentTimeMillis();
+                // Stamp every line emitted while this PR's scenario runs on
+                // this thread (doMerge, the invert/replay tree, GitUtils) with
+                // a per-integration operation id, so a multi-PR run log stays
+                // greppable per PR. Cleared in finally so it never leaks into
+                // the next PR.
+                LoggingService prLog = LoggingService.forOperation(this.project.getName(), "PR-" + values[2]);
+                LoggingService.setOperationContext("PR-" + values[2]);
                 try {
                     PipelineRunResult.ScenarioOutcome outcome = evaluateMergeScenario(data, repo, proj, patch);
                     patch.setDone();
@@ -250,12 +258,14 @@ public class RePatchIntegration {
                     runResult.record(Integer.parseInt(values[2]), outcome,
                             System.currentTimeMillis() - scenarioStart, null);
                 } catch (Exception | AssertionError e) {
-                    System.out.println("[Pipeline] SCENARIO_FAILED PR " + values[2] + " — "
+                    prLog.error("[Pipeline] SCENARIO_FAILED PR " + values[2] + " — "
                             + e.getClass().getSimpleName() + ": " + e.getMessage());
                     e.printStackTrace();
                     runResult.record(Integer.parseInt(values[2]), PipelineRunResult.ScenarioOutcome.FAILED,
                             System.currentTimeMillis() - scenarioStart,
                             e.getClass().getSimpleName() + ": " + e.getMessage());
+                } finally {
+                    LoggingService.clearOperationContext();
                 }
             }
         }
