@@ -1,8 +1,10 @@
 package edu.unlv.cs.evol.repatch.invertOperations;
 
-import edu.unlv.cs.evol.repatch.refactoringObjects.RefactoringObject;
+import edu.unlv.cs.evol.repatch.platform.PsiSearchService;
+import edu.unlv.cs.evol.repatch.platform.RefactoringExecutionContext;
+import edu.unlv.cs.evol.repatch.platform.RefactoringOperation;
 import edu.unlv.cs.evol.repatch.refactoringObjects.MoveRenameFieldObject;
-import edu.unlv.cs.evol.repatch.utils.Utils;
+import edu.unlv.cs.evol.repatch.refactoringObjects.RefactoringObject;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.psi.PsiClass;
@@ -13,73 +15,97 @@ import com.intellij.refactoring.MoveMembersRefactoring;
 import com.intellij.refactoring.RefactoringFactory;
 import com.intellij.refactoring.RenameRefactoring;
 import com.intellij.usageView.UsageInfo;
-import com.intellij.usages.UsageView;
-import com.intellij.usages.UsageViewManager;
 
-public class InvertMoveRenameField {
+/**
+ * Inverts a rename/move field refactoring by renaming/moving the field
+ * back. Migrated onto the Week 4A contract.
+ *
+ * Operation family: move/rename (field).
+ *  - Expected PSI inputs: the destination class (for moves, with a fallback
+ *    to the original class for misidentified refactorings) or original
+ *    class (rename-only), resolvable from its file path, and the refactored
+ *    field present on it.
+ *  - Side effects: field renamed to its original name and/or moved back to
+ *    the original class; references updated by the platform processors.
+ *  - Failure behavior: unresolvable class/field classify as
+ *    PRECONDITION_FAILED before mutation. The legacy class only null-checked
+ *    the field on the rename branch and passed a possibly-null member into
+ *    the move processor (the 12660 null-target path); both branches now
+ *    fail the precondition instead.
+ *  - Postcondition: a field with the original name is resolvable on the
+ *    original class.
+ */
+public class InvertMoveRenameField implements RefactoringOperation {
 
-    Project project;
+    private final MoveRenameFieldObject fieldObject;
 
-    public InvertMoveRenameField(Project project) {
-        this.project = project;
+    // Resolved during prepare (steps 1-2), consumed by execute (step 3).
+    private PsiClass psiClass;
+    private PsiField psiField;
+    private VirtualFile vFile;
+
+    public InvertMoveRenameField(RefactoringObject refactoringObject) {
+        this.fieldObject = (MoveRenameFieldObject) refactoringObject;
     }
 
-    /*
-     * Invert the move and rename field refactorings that was performed in the commit
-     */
-    public void invertRenameField(RefactoringObject ref) {
-        MoveRenameFieldObject fieldObject = (MoveRenameFieldObject) ref;
-        // The field name we are inverting to
-        String originalField = fieldObject.getOriginalName();
-        // The field name we are inverting
-        String renamedField = fieldObject.getDestinationName();
+    @Override
+    public String describe() {
+        return "invert " + fieldObject.getRefactoringType()
+                + " (" + fieldObject.getRefactoringDetail() + ")";
+    }
 
-        // The file and class that we are inverting the refactoring in. We use the original instead of the destination
-        // because the class refactorings were already inverted.
+    @Override
+    public void prepare(RefactoringExecutionContext context) throws PreconditionFailed {
+        Project project = context.getProject();
+        // The file and class that we are inverting the refactoring in. We use
+        // the original instead of the destination because the class
+        // refactorings were already inverted.
         String originalFile = fieldObject.getOriginalFilePath();
         String originalClass = fieldObject.getOriginalClass();
         String destinationFile = fieldObject.getDestinationFilePath();
         String destinationClass = fieldObject.getDestinationClass();
 
-        Utils utils = new Utils(project);
-        utils.addSourceRoot(originalFile, originalClass);
+        context.getProjectRoots().addSourceRoot(project, originalFile, originalClass);
 
-        PsiClass psiClass = null;
         // If it is a Move Field or Rename+Move Field refactoring, use the destination class
-        if(fieldObject.isMove()) {
-            psiClass = utils.getPsiClassFromClassAndFileNames(destinationClass, destinationFile);
-            if(psiClass == null) {
+        if (fieldObject.isMove()) {
+            psiClass = context.getPsiSearch().findClass(project, destinationClass, destinationFile);
+            if (psiClass == null) {
                 // Try original class in case of misidentified refactoring
-                psiClass = utils.getPsiClassFromClassAndFileNames(originalClass, originalFile);
+                psiClass = context.getPsiSearch().findClass(project, originalClass, originalFile);
             }
+        } else if (fieldObject.isRename()) {
+            psiClass = context.getPsiSearch().findClass(project, originalClass, originalFile);
         }
-        else if(fieldObject.isRename()) {
-            psiClass = utils.getPsiClassFromClassAndFileNames(originalClass, originalFile);
-
+        if (psiClass == null) {
+            throw new PreconditionFailed("class " + originalClass
+                    + " not resolvable from " + originalFile);
         }
+        vFile = psiClass.getContainingFile().getVirtualFile();
 
-        // If we cannot find the PSI class, do not invert the refactoring
-        if(psiClass == null) {
-            System.out.println("Could not find PSI Class for " + originalClass);
-            return;
+        psiField = PsiSearchService.findField(psiClass, fieldObject.getDestinationName());
+        if (psiField == null) {
+            throw new PreconditionFailed("refactored field " + fieldObject.getDestinationName()
+                    + " not found on " + psiClass.getQualifiedName());
         }
-        // Get the virtual file, so we can update the virtual file after performing the refactoring
-        VirtualFile virtualFile = psiClass.getContainingFile().getVirtualFile();
+    }
 
-        PsiField psiField = Utils.getPsiField(psiClass, renamedField);
+    @Override
+    public void execute(RefactoringExecutionContext context) {
+        Project project = context.getProject();
+        String originalField = fieldObject.getOriginalName();
+        String originalClass = fieldObject.getOriginalClass();
+
         // If the field object is a rename field, perform the rename field first
-        if(fieldObject.isRename()) {
+        if (fieldObject.isRename()) {
             RefactoringFactory factory = JavaRefactoringFactory.getInstance(project);
-            if(psiField == null) {
-                return;
-            }
-//            assert psiField != null;
             RenameRefactoring renameRefactoring = factory.createRename(psiField, originalField, true, true);
             UsageInfo[] refactoringUsages = renameRefactoring.findUsages();
             renameRefactoring.doRefactoring(refactoringUsages);
         }
-        // Now, if the field was moved, undo the move by performing a move field refactoring to move it to the original class
-        if(fieldObject.isMove()) {
+        // Now, if the field was moved, undo the move by performing a move field refactoring to move it to the
+        // original class
+        if (fieldObject.isMove()) {
             JavaRefactoringFactory refactoringFactory = JavaRefactoringFactory.getInstance(project);
             String visibility = fieldObject.getVisibility();
             PsiMember[] psiMembers = new PsiMember[1];
@@ -88,22 +114,26 @@ public class InvertMoveRenameField {
                     originalClass, visibility);
             UsageInfo[] refactoringUsages = moveFieldRefactoring.findUsages();
             moveFieldRefactoring.doRefactoring(refactoringUsages);
-            psiClass = moveFieldRefactoring.getTargetClass();
-            if(psiClass == null) {
-                return;
-            }
         }
 
-        // Check if there is a usage view. if so, close the usage view and do not perform the refactoring.
-        // Need to check if there is a workaround or solution for this
-        UsageViewManager viewManager = UsageViewManager.getInstance(project);
-        UsageView usageView = viewManager.getSelectedUsageView();
-        if(usageView != null) {
-            usageView.close();
-        }
-
+        context.getPlatform().closeActiveUsageView(project);
         // Update the virtual file that contains the refactoring
-        virtualFile.refresh(false, true);
+        vFile.refresh(false, true);
+    }
 
+    @Override
+    public String verifyPostcondition(RefactoringExecutionContext context) {
+        String originalField = fieldObject.getOriginalName();
+        String originalClass = fieldObject.getOriginalClass();
+        String originalFile = fieldObject.getOriginalFilePath();
+        PsiClass invertedClass = context.getPsiSearch()
+                .findClass(context.getProject(), originalClass, originalFile);
+        if (invertedClass == null) {
+            return "original class " + originalClass + " not resolvable from " + originalFile;
+        }
+        if (PsiSearchService.findField(invertedClass, originalField) == null) {
+            return "field " + originalField + " not restored on " + originalClass;
+        }
+        return null;
     }
 }

@@ -1,6 +1,7 @@
 package edu.unlv.cs.evol.repatch.testUtils;
 
 import com.intellij.psi.PsiClass;
+import com.intellij.psi.PsiField;
 import com.intellij.psi.PsiFile;
 import com.intellij.psi.PsiJavaFile;
 import com.intellij.psi.PsiMethod;
@@ -21,6 +22,22 @@ public class TestUtils {
             names.add(method.getName());
         }
         return names;
+    }
+
+    public static List<String> getFieldNames(PsiField[] fields) {
+        ArrayList<String> names = new ArrayList<>();
+        for (PsiField field : fields) {
+            names.add(field.getName());
+        }
+        return names;
+    }
+
+    public static PsiField[] getPsiFieldsFromFile(PsiFile psiFile) {
+        ArrayList<PsiField> psiFields = new ArrayList<>();
+        for (PsiClass psiClass : getPsiClassesFromFile(psiFile)) {
+            psiFields.addAll(Arrays.asList(psiClass.getFields()));
+        }
+        return psiFields.toArray(new PsiField[0]);
     }
 
     public static PsiMethod[] getPsiMethodsFromFile(PsiFile psiFile) {

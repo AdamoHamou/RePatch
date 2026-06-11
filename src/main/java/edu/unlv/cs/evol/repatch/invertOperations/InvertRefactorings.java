@@ -88,8 +88,8 @@ public class InvertRefactorings {
             case RENAME_ATTRIBUTE:
             case MOVE_ATTRIBUTE:
             case MOVE_RENAME_ATTRIBUTE:
-                return RefactoringOperation.legacy(description,
-                        () -> new InvertMoveRenameField(project).invertRenameField(refactoringObject));
+                // Migrated onto the 4A contract: implements RefactoringOperation directly.
+                return new InvertMoveRenameField(refactoringObject);
             case PULL_UP_OPERATION:
                 return RefactoringOperation.legacy(description,
                         () -> new InvertPullUpMethod(project).invertPullUpMethod(refactoringObject));

@@ -44,10 +44,12 @@ A shared execution contract
 PRECONDITION_FAILED / PROCESSOR_THREW / POSTCONDITION_BROKEN /
 UNSUPPORTED_SHAPE). Both dispatchers (`InvertRefactorings`,
 `ReplayRefactorings`) route every operation through it; every failure
-logs one `[RefactoringExecution]` line. Four operation classes are fully
+logs one `[RefactoringExecution]` line. Six operation classes are fully
 migrated (`InvertMoveRenameClass`, `InvertMoveRenameMethod`,
-`ReplayMoveRenameMethod`, `InvertExtractMethod`); the other 19 run
-through `RefactoringOperation.legacy` (classified, internals unchanged).
+`ReplayMoveRenameMethod`, `InvertExtractMethod`, and since Week 5B the
+field pair `InvertMoveRenameField`/`ReplayMoveRenameField`); the other
+17 run through `RefactoringOperation.legacy` (classified, internals
+unchanged).
 
 ### Pipeline operability (Week 5)
 
@@ -149,7 +151,7 @@ Ordered by expected value:
    range IAE, `MoveMembersProcessor` null target,
    `PsiSearchService.parameterComparator` substring math on
    RENAME_PARAMETER).
-2. **Migrate the remaining 19 operation classes** onto the 4A contract
+2. **Migrate the remaining 17 operation classes** onto the 4A contract
    (pattern: `InvertMoveRenameMethodTest` + `InMemoryPlatformFacade`),
    converting silent-return paths into classified results.
 3. **~50% fewer recorded refactorings (1362 vs 2724)** — JGit-version

@@ -75,8 +75,8 @@ public class ReplayRefactorings {
             case RENAME_ATTRIBUTE:
             case MOVE_ATTRIBUTE:
             case MOVE_RENAME_ATTRIBUTE:
-                return RefactoringOperation.legacy(description,
-                        () -> new ReplayMoveRenameField(project).replayRenameField(refactoringObject));
+                // Migrated onto the 4A contract: implements RefactoringOperation directly.
+                return new ReplayMoveRenameField(refactoringObject);
             case PULL_UP_OPERATION:
                 return RefactoringOperation.legacy(description,
                         () -> new ReplayPullUpMethod(project).replayPullUpMethod(refactoringObject));
