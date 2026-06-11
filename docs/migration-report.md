@@ -52,7 +52,7 @@ through `RefactoringOperation.legacy` (classified, internals unchanged).
 ### Pipeline operability (Week 5)
 
 - **Auto-clone**: evaluation repos clone themselves on first run into
-  owner-suffixed checkouts (`<RepoName>-<Owner>`, e.g. `kafka-linkedin`),
+  owner-prefixed checkouts (`<Owner>-<RepoName>`, e.g. `linkedin-kafka`),
   pinned to the branch + SHA in
   `sample_data/repatch_integration_projects` (single source of truth,
   also parsed by the reset script). Zero manual setup on a fresh machine.

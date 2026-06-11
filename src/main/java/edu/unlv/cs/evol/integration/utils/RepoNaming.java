@@ -2,14 +2,14 @@ package edu.unlv.cs.evol.integration.utils;
 
 /**
  * Derives the on-disk checkout directory name for an evaluation repository
- * from its clone URL. The name is owner-suffixed — {@code <RepoName>-<Owner>}
+ * from its clone URL. The name is owner-prefixed — {@code <Owner>-<RepoName>}
  * — so checkouts of forks with the same repository name cannot collide or be
  * confused with each other (e.g. an apache/kafka clone accidentally used where
  * the linkedin/kafka fork was required):
  *
  * <ul>
- *   <li>{@code https://github.com/linkedin/kafka} → {@code kafka-linkedin}</li>
- *   <li>{@code https://github.com/AdamoHamou/RePatch} → {@code RePatch-AdamoHamou}</li>
+ *   <li>{@code https://github.com/linkedin/kafka} → {@code linkedin-kafka}</li>
+ *   <li>{@code https://github.com/AdamoHamou/RePatch} → {@code AdamoHamou-RePatch}</li>
  * </ul>
  *
  * The same derivation is implemented in bash by
@@ -24,12 +24,12 @@ public final class RepoNaming {
      * @param cloneUrl an HTTPS clone URL whose last two path segments are
      *                 {@code <owner>/<repo>}; a trailing slash or {@code .git}
      *                 suffix is tolerated
-     * @return the checkout directory name, {@code <RepoName>-<Owner>}
+     * @return the checkout directory name, {@code <Owner>-<RepoName>}
      * @throws IllegalArgumentException if owner and repository cannot both be
      *                                  derived from the URL
      */
     public static String directoryName(String cloneUrl) {
-        return repositoryName(cloneUrl) + "-" + owner(cloneUrl);
+        return owner(cloneUrl) + "-" + repositoryName(cloneUrl);
     }
 
     /** @return the repository segment of the clone URL, e.g. {@code kafka} */

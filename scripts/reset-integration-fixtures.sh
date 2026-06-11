@@ -10,7 +10,7 @@
 # Evaluation checkouts are described by
 # src/main/resources/sample_data/repatch_integration_projects
 # (mainlineUrl,variantUrl,branch,pinnedSha — one project per line). Each
-# checkout lives at ~/repatch-integration-projects/<RepoName>-<Owner>,
+# checkout lives at ~/repatch-integration-projects/<Owner>-<RepoName>,
 # derived from the variant URL (same derivation as RepoNaming.java; keep
 # the two in sync). A missing checkout is NOT an error: the pipeline
 # clones it on first run.
@@ -45,20 +45,20 @@ while IFS=, read -r mainline_url variant_url branch pinned_sha; do
         echo "[reset-fixtures]   expected mainlineUrl,variantUrl,branch,pinnedSha" >&2
         exit 1
     fi
-    # <RepoName>-<Owner> from the variant URL, e.g.
-    # https://github.com/linkedin/kafka -> kafka-linkedin
+    # <Owner>-<RepoName> from the variant URL, e.g.
+    # https://github.com/linkedin/kafka -> linkedin-kafka
     url="${variant_url%/}"; url="${url%.git}"
     repo="${url##*/}"
     owner_path="${url%/*}"; owner="${owner_path##*/}"
-    checkout_dir="${DATA_DIR}/${repo}-${owner}"
+    checkout_dir="${DATA_DIR}/${owner}-${repo}"
 
     if [ ! -d "${checkout_dir}/.git" ]; then
         echo "[reset-fixtures] ${checkout_dir} not present — pipeline will clone it on first run"
         continue
     fi
-    echo "[reset-fixtures] resetting ${repo}-${owner} to ${pinned_sha:0:12}"
+    echo "[reset-fixtures] resetting ${owner}-${repo} to ${pinned_sha:0:12}"
     git -C "${checkout_dir}" reset --hard "${pinned_sha}" >/dev/null
-    echo "[reset-fixtures] removing ${repo}-${owner}/.idea"
+    echo "[reset-fixtures] removing ${owner}-${repo}/.idea"
     rm -rf "${checkout_dir}/.idea"
 done < "${PROJECTS_FILE}"
 

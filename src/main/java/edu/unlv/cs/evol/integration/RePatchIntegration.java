@@ -96,7 +96,7 @@ public class RePatchIntegration {
             }
             proj = Project.findFirst("fork_url = ?", projectUrl);
             if (proj == null) {
-                projectName = openProject(path, projectUrl, mainLineUrl, branch, pinnedSha); // checkout dir name, e.g. kafka-linkedin
+                projectName = openProject(path, projectUrl, mainLineUrl, branch, pinnedSha); // checkout dir name, e.g. linkedin-kafka
                 System.out.println("Starting Project -> " + projectName);
                 proj = new Project(mainLineUrl, mainLineName, projectUrl, projectName);
                 proj.saveIt();
@@ -197,7 +197,7 @@ public class RePatchIntegration {
             String[] values = line.split(",");
 //            System.out.println("VALUES: " + Arrays.toString(values));
             // Match patches by the variant fork's URL, not the checkout dir name:
-            // the dir is owner-suffixed (kafka-linkedin) and no longer a substring
+            // the dir is owner-prefixed (linkedin-kafka) and no longer a substring
             // of the URL in the patches file.
             if(values[1].trim().equals(projectUrl)) {
                 System.out.println(">>>>>>>>>Patch Integration " + ++i + ": PR " + values[2]+ "<<<<<<<<<<");
@@ -662,8 +662,8 @@ public class RePatchIntegration {
 
     /*
      * Open the evaluation project, cloning it first when the checkout is
-     * missing. The checkout directory is owner-suffixed — <RepoName>-<Owner>,
-     * e.g. kafka-linkedin — so forks can't be confused with their mainline
+     * missing. The checkout directory is owner-prefixed — <Owner>-<RepoName>,
+     * e.g. linkedin-kafka — so forks can't be confused with their mainline
      * (see RepoNaming). Returns the directory name.
      */
     private String openProject(String path, String url, String remoteOriginUrl, String branch, String pinnedSha) {

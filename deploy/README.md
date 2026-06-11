@@ -84,8 +84,8 @@ JAVA_HOME=<JDK17_DIR> JDBC_USER=repatch JDBC_PASSWORD=repatch \
 ```
 
 (`dataPath` is resolved relative to `$HOME`. The kafka fixture lives at
-`~/repatch-integration-projects/kafka-linkedin` — the directory is named
-`<RepoName>-<Owner>` from the clone URL, so the linkedin/kafka fork can't be
+`~/repatch-integration-projects/linkedin-kafka` — the directory is named
+`<Owner>-<RepoName>` from the clone URL, so the linkedin/kafka fork can't be
 confused with mainline apache/kafka. If it is missing, the pipeline clones
 it on first run, pins it to the branch + SHA listed in
 `src/main/resources/sample_data/repatch_integration_projects`, and adds
@@ -95,8 +95,8 @@ which line of that file to run — it is a name filter, not a directory name.)
 ## Logs
 
 - Run log: IntelliJ run console, or redirect the CLI command to a file
-- Pipeline log (appended across runs): `~/temp/logs/kafka-linkedin`
+- Pipeline log (appended across runs): `~/temp/logs/linkedin-kafka`
   (named after the checkout directory; was `~/temp/logs/kafka` before the
-  owner-suffixed naming)
+  owner-prefixed naming)
 - Classified per-operation failures: grep the run log for `[RefactoringExecution]`
 - Health checks: `grep -c IndexNotReadyException <log>` should be **0**

@@ -5,27 +5,27 @@ import org.junit.Test;
 import static org.junit.Assert.assertEquals;
 
 /**
- * The owner-suffixed checkout naming contract: <RepoName>-<Owner> derived
+ * The owner-prefixed checkout naming contract: <Owner>-<RepoName> derived
  * from the clone URL. The bash twin of this derivation lives in
  * scripts/reset-integration-fixtures.sh.
  */
 public class RepoNamingTest {
 
     @Test
-    public void derivesOwnerSuffixedDirectoryName() {
-        assertEquals("kafka-linkedin",
+    public void derivesOwnerPrefixedDirectoryName() {
+        assertEquals("linkedin-kafka",
                 RepoNaming.directoryName("https://github.com/linkedin/kafka"));
-        assertEquals("RePatch-AdamoHamou",
+        assertEquals("AdamoHamou-RePatch",
                 RepoNaming.directoryName("https://github.com/AdamoHamou/RePatch"));
     }
 
     @Test
     public void toleratesGitSuffixAndTrailingSlash() {
-        assertEquals("kafka-linkedin",
+        assertEquals("linkedin-kafka",
                 RepoNaming.directoryName("https://github.com/linkedin/kafka.git"));
-        assertEquals("kafka-linkedin",
+        assertEquals("linkedin-kafka",
                 RepoNaming.directoryName("https://github.com/linkedin/kafka/"));
-        assertEquals("kafka-linkedin",
+        assertEquals("linkedin-kafka",
                 RepoNaming.directoryName(" https://github.com/linkedin/kafka.git "));
     }
 
