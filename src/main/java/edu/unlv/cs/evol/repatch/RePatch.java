@@ -9,6 +9,7 @@ import edu.unlv.cs.evol.repatch.platform.VfsSyncService;
 import edu.unlv.cs.evol.repatch.replayOperations.ReplayRefactorings;
 import edu.unlv.cs.evol.repatch.utils.RefactoringObjectUtils;
 import edu.unlv.cs.evol.repatch.refactoringObjects.RefactoringObject;
+import edu.unlv.cs.evol.repatch.utils.TimeoutPolicy;
 import edu.unlv.cs.evol.repatch.utils.Utils;
 import com.intellij.openapi.actionSystem.AnAction;
 import com.intellij.openapi.actionSystem.AnActionEvent;
@@ -41,14 +42,20 @@ public class RePatch extends AnAction {
     Project project;
     private final PlatformFacade platform;
     private final VfsSyncService vfs;
+    private final TimeoutPolicy timeouts;
 
     public RePatch() {
         this(new IntelliJ2024PlatformFacade());
     }
 
     public RePatch(PlatformFacade platform) {
+        this(platform, TimeoutPolicy.fromSystemProperties());
+    }
+
+    public RePatch(PlatformFacade platform, TimeoutPolicy timeouts) {
         this.platform = platform;
         this.vfs = new VfsSyncService(platform);
+        this.timeouts = timeouts;
     }
 
 
@@ -125,7 +132,7 @@ public class RePatch extends AnAction {
             leftRefsAtomic.set(detectAndSimplifyRefactorings(leftCommit, baseCommit, detectedRefactorings));
         });
         try {
-            futureRefMiner.get(11, TimeUnit.MINUTES);
+            futureRefMiner.get(timeouts.refMinerDetectMs(), TimeUnit.MILLISECONDS);
 
 
         } catch (TimeoutException e) {
@@ -142,8 +149,10 @@ public class RePatch extends AnAction {
         ArrayList<RefactoringObject> leftRefs = leftRefsAtomic.get();
 
         long time2 = System.currentTimeMillis();
-        // If it timed out
-        if((time - time2) > 900000) {
+        // If it timed out. (Pre-policy code computed start-minus-now here, so
+        // this budget could never fire; TimeoutPolicy checks the intended
+        // direction.)
+        if(timeouts.isScenarioOverBudget(time, time2)) {
             System.out.println("RePatch Timed Out");
             return null;
         }
@@ -190,8 +199,8 @@ public class RePatch extends AnAction {
         Pair<ArrayList<Pair<RefactoringObject, RefactoringObject>>, ArrayList<RefactoringObject>> pair = matrix.detectConflicts(leftRefs, rightRefs);
 
         time2 = System.currentTimeMillis();
-        // Timeout if it's been 15 minutes
-        if((time - time2) > 900000) {
+        // Timeout if the scenario is over budget (default 15 minutes)
+        if(timeouts.isScenarioOverBudget(time, time2)) {
             System.out.println("RePatch Timed Out");
             return null;
         }

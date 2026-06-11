@@ -16,6 +16,7 @@ import com.intellij.openapi.vfs.VirtualFileManager;
 import com.intellij.psi.PsiDocumentManager;
 import com.intellij.usages.UsageView;
 import com.intellij.usages.UsageViewManager;
+import edu.unlv.cs.evol.repatch.utils.TimeoutPolicy;
 
 import java.nio.file.Path;
 import java.util.function.Supplier;
@@ -31,6 +32,16 @@ import java.util.function.Supplier;
  * scoped to this one class.
  */
 public final class IntelliJ2024PlatformFacade implements PlatformFacade {
+
+    private final TimeoutPolicy timeouts;
+
+    public IntelliJ2024PlatformFacade() {
+        this(TimeoutPolicy.fromSystemProperties());
+    }
+
+    public IntelliJ2024PlatformFacade(TimeoutPolicy timeouts) {
+        this.timeouts = timeouts;
+    }
 
     /**
      * 2024.x has no public-API "open or import" entry point that handles a
@@ -48,9 +59,6 @@ public final class IntelliJ2024PlatformFacade implements PlatformFacade {
     public Project openProject(Path path) {
         return ProjectUtil.openOrImport(path, null, false);
     }
-
-    /** Upper bound on one smart-mode wait; the pipeline logs and proceeds past it. */
-    private static final long SMART_WAIT_DEADLINE_MS = 120_000;
 
     @Override
     public void waitForSmartMode(Project project) {
@@ -86,7 +94,7 @@ public final class IntelliJ2024PlatformFacade implements PlatformFacade {
      */
     private void pumpEventsUntilSmart(Project project) {
         DumbService dumbService = DumbService.getInstance(project);
-        long deadline = System.currentTimeMillis() + SMART_WAIT_DEADLINE_MS;
+        long deadline = System.currentTimeMillis() + timeouts.smartModeWaitMs();
         // Flush at least once before trusting isDumb: a dumb-mode start may
         // be sitting in the queue, not yet dispatched, in which case the
         // project still reports smart against a stale index.
@@ -98,7 +106,7 @@ public final class IntelliJ2024PlatformFacade implements PlatformFacade {
             }
             if (System.currentTimeMillis() > deadline) {
                 System.out.println("[PlatformFacade] project still dumb after "
-                        + SMART_WAIT_DEADLINE_MS + "ms of event pumping; proceeding anyway");
+                        + timeouts.smartModeWaitMs() + "ms of event pumping; proceeding anyway");
                 return;
             }
             // Indexing is proceeding on background threads; yield briefly
