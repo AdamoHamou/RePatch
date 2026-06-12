@@ -211,6 +211,28 @@ CREATE TABLE IF NOT EXISTS `refactoring_aware_integration_repatch`.`refactoring`
 ENGINE = InnoDB;
 
 
+-- -----------------------------------------------------
+-- Table `refactoring_aware_integration_repatch`.`failure_event`
+-- -----------------------------------------------------
+DROP TABLE IF EXISTS `refactoring_aware_integration_repatch`.`failure_event` ;
+
+CREATE TABLE IF NOT EXISTS `refactoring_aware_integration_repatch`.`failure_event` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `project_id` INT NULL,
+  `patch_id` INT NULL,
+  `merge_commit_id` INT NULL,
+  `operation_id` VARCHAR(32) NULL,
+  `phase` VARCHAR(32) NOT NULL,
+  `refactoring_type` VARCHAR(64) NULL,
+  `category` VARCHAR(48) NOT NULL,
+  `evidence` TEXT NULL,
+  `is_pipeline_artifact` TINYINT(1) NULL DEFAULT 0,
+  `created_at` DATETIME NULL,
+  `updated_at` DATETIME NULL,
+  PRIMARY KEY (`id`))
+ENGINE = InnoDB;
+
+
 SET SQL_MODE=@OLD_SQL_MODE;
 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS;
 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS;
