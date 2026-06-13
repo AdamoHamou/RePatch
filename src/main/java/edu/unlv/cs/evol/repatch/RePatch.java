@@ -7,6 +7,7 @@ import edu.unlv.cs.evol.repatch.platform.PlatformFacade;
 import edu.unlv.cs.evol.repatch.platform.RefactoringExecutionContext;
 import edu.unlv.cs.evol.repatch.platform.VfsSyncService;
 import edu.unlv.cs.evol.repatch.replayOperations.ReplayRefactorings;
+import edu.unlv.cs.evol.repatch.utils.FailureEventSink;
 import edu.unlv.cs.evol.repatch.utils.RefactoringObjectUtils;
 import edu.unlv.cs.evol.repatch.refactoringObjects.RefactoringObject;
 import edu.unlv.cs.evol.repatch.utils.TimeoutPolicy;
@@ -137,11 +138,17 @@ public class RePatch extends AnAction {
 
         } catch (TimeoutException e) {
             System.out.println("RePatch Timed Out");
+            FailureEventSink.record(FailureEventSink.PHASE_DETECT, null, FailureEventSink.CATEGORY_TIMEOUT,
+                    "RefactoringMiner detect exceeded " + timeouts.refMinerDetectMs() + " ms for "
+                            + leftCommit + " and " + rightCommit);
             return null;
         }
         catch (InterruptedException | ExecutionException e) {
             System.out.println("There was an error detecting refactorings");
             e.printStackTrace();
+            FailureEventSink.record(FailureEventSink.PHASE_DETECT, null, FailureEventSink.CATEGORY_DETECT_ERROR,
+                    "RefactoringMiner detect failed for " + leftCommit + " and " + rightCommit + ": "
+                            + e.getClass().getSimpleName() + ": " + e.getMessage());
             return null;
         }
 
@@ -154,6 +161,9 @@ public class RePatch extends AnAction {
         // direction.)
         if(timeouts.isScenarioOverBudget(time, time2)) {
             System.out.println("RePatch Timed Out");
+            FailureEventSink.record(FailureEventSink.PHASE_SCENARIO, null, FailureEventSink.CATEGORY_TIMEOUT,
+                    "scenario over budget (" + (time2 - time) + " ms > " + timeouts.scenarioBudgetMs()
+                            + " ms) after refactoring detection for " + leftCommit + " and " + rightCommit);
             return null;
         }
 
@@ -174,6 +184,10 @@ public class RePatch extends AnAction {
             Utils.log(project.getName(), "[GitPipeline] SCENARIO_ABORTED — committing the inverted right side"
                     + " produced no commit for " + leftCommit + " and " + rightCommit
                     + "; check git identity (git config user.name / user.email)");
+            FailureEventSink.record(FailureEventSink.PHASE_SCENARIO, null,
+                    FailureEventSink.CATEGORY_SCENARIO_ABORTED,
+                    "committing the inverted right side produced no commit for "
+                            + leftCommit + " and " + rightCommit);
             return null;
         }
         gitUtils.checkout(leftCommit);
@@ -202,6 +216,9 @@ public class RePatch extends AnAction {
         // Timeout if the scenario is over budget (default 15 minutes)
         if(timeouts.isScenarioOverBudget(time, time2)) {
             System.out.println("RePatch Timed Out");
+            FailureEventSink.record(FailureEventSink.PHASE_SCENARIO, null, FailureEventSink.CATEGORY_TIMEOUT,
+                    "scenario over budget (" + (time2 - time) + " ms > " + timeouts.scenarioBudgetMs()
+                            + " ms) after conflict detection for " + leftCommit + " and " + rightCommit);
             return null;
         }
 
@@ -274,6 +291,12 @@ public class RePatch extends AnAction {
                                 + commitId + " (base=" + base + " -> " + commit + "): "
                                 + e.getClass().getName() + ": " + e.getMessage());
                         e.printStackTrace();
+                        // Runs on the RefMiner executor thread — the sink is
+                        // the only thing safe to touch from here.
+                        FailureEventSink.record(FailureEventSink.PHASE_DETECT, null,
+                                FailureEventSink.CATEGORY_DETECT_ERROR,
+                                "handleException on commit " + commitId + " (base=" + base + " -> "
+                                        + commit + "): " + e.getClass().getName() + ": " + e.getMessage());
                     }
                 });
         } catch (Exception e) {

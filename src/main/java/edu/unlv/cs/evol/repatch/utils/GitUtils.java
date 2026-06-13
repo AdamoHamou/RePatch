@@ -279,6 +279,9 @@ class DoGitCommit implements Runnable {
                 return;
             }
             System.out.println("[GitPipeline] COMMIT_FAILED — git commit produced no commit: " + detail.trim());
+            FailureEventSink.record(FailureEventSink.PHASE_GIT_COMMIT, null,
+                    FailureEventSink.CATEGORY_COMMIT_FAILED,
+                    "git commit produced no commit: " + detail.trim());
             return;
         }
         String res = result.getOutput().get(0);
@@ -294,6 +297,9 @@ class DoGitCommit implements Runnable {
             this.commit = commit.substring(commit.lastIndexOf(" ") + 1);
         } catch (RuntimeException e) {
             System.out.println("[GitPipeline] COMMIT_FAILED — could not parse commit hash from: " + res);
+            FailureEventSink.record(FailureEventSink.PHASE_GIT_COMMIT, null,
+                    FailureEventSink.CATEGORY_COMMIT_FAILED,
+                    "could not parse commit hash from: " + res);
         }
     }
 
@@ -309,6 +315,9 @@ class DoGitCommit implements Runnable {
         if (!result.success() || result.getOutput().isEmpty()) {
             System.out.println("[GitPipeline] COMMIT_FAILED — could not resolve HEAD: "
                     + result.getErrorOutputAsJoinedString());
+            FailureEventSink.record(FailureEventSink.PHASE_GIT_COMMIT, null,
+                    FailureEventSink.CATEGORY_COMMIT_FAILED,
+                    "could not resolve HEAD: " + result.getErrorOutputAsJoinedString());
             return null;
         }
         return result.getOutput().get(0).trim();

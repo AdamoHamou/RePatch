@@ -1,5 +1,7 @@
 package edu.unlv.cs.evol.repatch.platform;
 
+import edu.unlv.cs.evol.repatch.utils.FailureEventSink;
+
 /**
  * Drives the Week 4A six-step execution contract for every replay/invert
  * operation:
@@ -30,7 +32,21 @@ public final class RefactoringExecutionService {
         return context;
     }
 
+    /**
+     * Single choke point for ALL operation results: every classified failure
+     * is recorded into the {@link FailureEventSink} here, so the 23 operation
+     * classes need no instrumentation and none can be forgotten.
+     */
     public RefactoringExecutionResult execute(RefactoringOperation operation) {
+        RefactoringExecutionResult result = doExecute(operation);
+        if (!result.isSuccess()) {
+            FailureEventSink.recordOperationFailure(result.getOperation(),
+                    result.getStatus().name(), result.describe());
+        }
+        return result;
+    }
+
+    private RefactoringExecutionResult doExecute(RefactoringOperation operation) {
         String description = operation.describe();
 
         // Step 1 (shared half): project liveness + index readiness.

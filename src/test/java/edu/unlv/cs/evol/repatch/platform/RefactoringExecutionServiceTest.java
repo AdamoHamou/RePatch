@@ -1,6 +1,9 @@
 package edu.unlv.cs.evol.repatch.platform;
 
 import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase;
+import edu.unlv.cs.evol.repatch.utils.FailureEventSink;
+
+import java.util.List;
 
 /**
  * Contract tests for the Week 4A six-step execution protocol: each failure
@@ -19,6 +22,7 @@ public class RefactoringExecutionServiceTest extends LightJavaCodeInsightFixture
         facade = new InMemoryPlatformFacade();
         service = new RefactoringExecutionService(
                 new RefactoringExecutionContext(getProject(), facade));
+        FailureEventSink.clear();
     }
 
     private static RefactoringOperation operation(String description, ThrowingPrepare prepare,
@@ -100,5 +104,20 @@ public class RefactoringExecutionServiceTest extends LightJavaCodeInsightFixture
         assertEquals(RefactoringExecutionResult.Status.POSTCONDITION_BROKEN, result.getStatus());
         assertEquals("state missing", result.getDetail());
         assertEquals("sync still runs before the postcondition check", 1, facade.commitAndReparseCount);
+    }
+
+    public void testEveryFailureIsRecordedToTheSinkAndSuccessIsNot() {
+        service.execute(operation("invert RENAME_METHOD (m)",
+                () -> { throw new RefactoringOperation.PreconditionFailed("target missing"); },
+                () -> { }, null));
+        service.execute(operation("replay MOVE_OPERATION (m)", () -> { }, () -> { }, null));
+
+        List<FailureEventSink.Entry> events = FailureEventSink.drain();
+        assertEquals("only the failure must be recorded", 1, events.size());
+        assertEquals("INVERT", events.get(0).phase);
+        assertEquals("RENAME_METHOD", events.get(0).refactoringType);
+        assertEquals("PRECONDITION_FAILED", events.get(0).category);
+        assertTrue("evidence carries the classified log line",
+                events.get(0).evidence.contains("[RefactoringExecution] PRECONDITION_FAILED"));
     }
 }
