@@ -37,5 +37,29 @@ public class PipelineRunResultTest {
         assertTrue(summary.contains("[PipelineSummary] PR 12660 — FAILED"));
         assertTrue(summary.contains("IllegalStateException: boom"));
         assertTrue(summary.contains("3 PRs, 1 failed"));
+        assertTrue("a run with no failure events must still print the distribution line",
+                summary.contains("[PipelineSummary] failures: none"));
+    }
+
+    @Test
+    public void failureDistributionSortsByCountDescendingThenName() {
+        PipelineRunResult result = new PipelineRunResult();
+        for (int i = 0; i < 3; i++) {
+            result.recordFailure("PRECONDITION_FAILED");
+        }
+        result.recordFailure("POSTCONDITION_BROKEN");
+        result.recordFailure("COMMIT_FAILED");
+
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+        PrintStream previous = System.out;
+        System.setOut(new PrintStream(captured));
+        try {
+            result.printSummary();
+        } finally {
+            System.setOut(previous);
+        }
+
+        assertTrue(captured.toString().contains(
+                "[PipelineSummary] failures: PRECONDITION_FAILED=3 COMMIT_FAILED=1 POSTCONDITION_BROKEN=1"));
     }
 }

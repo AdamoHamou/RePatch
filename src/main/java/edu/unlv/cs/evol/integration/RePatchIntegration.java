@@ -8,6 +8,7 @@ import edu.unlv.cs.evol.integration.utils.EvaluationUtils;
 import edu.unlv.cs.evol.integration.utils.GitUtils;
 import edu.unlv.cs.evol.integration.utils.RepoNaming;
 import edu.unlv.cs.evol.integration.utils.Utils;
+import edu.unlv.cs.evol.repatch.utils.FailureEventSink;
 import edu.unlv.cs.evol.repatch.utils.LoggingService;
 import edu.unlv.cs.evol.repatch.platform.IntelliJ2024PlatformFacade;
 import edu.unlv.cs.evol.repatch.platform.PlatformFacade;
@@ -65,6 +66,9 @@ public class RePatchIntegration {
      * Use the give git repositories (mainline and variant fork) to integrate patches with RePatch and Git
      */
     public void runComparison(String path, String evaluationProject) throws Exception {
+        // Startup hygiene: a wedged previous run (same JVM) must not leak its
+        // failure events into this run's first scenario.
+        FailureEventSink.clear();
         URL url = IntegrationPipeline.class.getResource("/sample_data/repatch_integration_projects");
         assert url != null;
         InputStream inputStream = url.openStream();
@@ -265,6 +269,10 @@ public class RePatchIntegration {
                             System.currentTimeMillis() - scenarioStart,
                             e.getClass().getSimpleName() + ": " + e.getMessage());
                 } finally {
+                    // Safety drain: a scenario that threw (or aborted inside
+                    // doMerge) never reached the in-scenario drain — persist
+                    // its events now so they can't leak into the next PR.
+                    persistFailureEvents(proj, patch, null);
                     LoggingService.clearOperationContext();
                 }
             }
@@ -477,6 +485,12 @@ public class RePatchIntegration {
                 refactoringConflict.saveIt();
             }
         }
+
+        // RePatch has finished for this scenario — every classified failure it
+        // recorded is in the sink. Persist them next to the verdict rows, fully
+        // attributed (the safety drain in evaluateProject only catches scenarios
+        // that died before reaching this point and has no merge_commit id).
+        persistFailureEvents(proj, patch, mergeCommit);
 
         // Add Git data to database
         totalConflictingLOC = 0;
@@ -741,6 +755,33 @@ public class RePatchIntegration {
         } catch (Exception e) {
             e.printStackTrace();
             System.err.println("-> Failed to add or fetch remote: " + remoteName);
+        }
+    }
+
+    /*
+     * Drain the FailureEventSink and persist one failure_event row per entry,
+     * stamped with the scenario's ids and operation id. This is the pipeline's
+     * ONLY failure-event writer, and it runs on the EDT — the thread the
+     * ActiveJDBC Base connection is bound to; producers never touch the DB.
+     * Observation only: a failed write is logged, never thrown, so it cannot
+     * change a scenario's outcome or verdicts.
+     */
+    private void persistFailureEvents(Project proj, Patch patch, MergeCommit mergeCommit) {
+        List<FailureEventSink.Entry> events = FailureEventSink.drain();
+        for (FailureEventSink.Entry event : events) {
+            try {
+                new FailureEvent(event.phase, event.refactoringType, event.category, event.evidence,
+                        FailureEventSink.isPipelineArtifact(event.category, event.evidence),
+                        LoggingService.currentOperationId(),
+                        proj == null ? null : proj.getId(),
+                        patch == null ? null : patch.getId(),
+                        mergeCommit == null ? null : mergeCommit.getId()).saveIt();
+                runResult.recordFailure(event.category);
+            } catch (RuntimeException e) {
+                LoggingService.forProject(project == null ? null : project.getName())
+                        .error("[Pipeline] failure_event write failed (" + event.category + "): "
+                                + e.getClass().getSimpleName() + ": " + e.getMessage());
+            }
         }
     }
 

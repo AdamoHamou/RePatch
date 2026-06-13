@@ -4,7 +4,10 @@ import edu.unlv.cs.evol.integration.database.MergeResult;
 import edu.unlv.cs.evol.integration.database.Patch;
 
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Typed per-run record of what happened to each evaluated PR, replacing
@@ -44,10 +47,16 @@ public class PipelineRunResult {
     }
 
     private final List<Entry> entries = new ArrayList<>();
+    private final Map<String, Integer> failureCategories = new LinkedHashMap<>();
     private final long startedAtMs = System.currentTimeMillis();
 
     public void record(int prNumber, ScenarioOutcome outcome, long elapsedMs, String detail) {
         entries.add(new Entry(prNumber, outcome, elapsedMs, detail));
+    }
+
+    /** Count one classified failure event toward the end-of-run distribution. */
+    public void recordFailure(String category) {
+        failureCategories.merge(category, 1, Integer::sum);
     }
 
     /**
@@ -75,7 +84,25 @@ public class PipelineRunResult {
         }
         System.out.println("[PipelineSummary] " + entries.size() + " PRs, " + failed + " failed, total "
                 + (System.currentTimeMillis() - startedAtMs) / 1000 + "s");
+        System.out.println(failureDistributionLine());
         System.out.println("====================================================");
+    }
+
+    /**
+     * The run's classified-failure distribution as one greppable line, largest
+     * bucket first, e.g.
+     * {@code [PipelineSummary] failures: PRECONDITION_FAILED=212 POSTCONDITION_BROKEN=71}.
+     */
+    private String failureDistributionLine() {
+        StringBuilder line = new StringBuilder("[PipelineSummary] failures:");
+        if (failureCategories.isEmpty()) {
+            return line.append(" none").toString();
+        }
+        failureCategories.entrySet().stream()
+                .sorted(Comparator.<Map.Entry<String, Integer>>comparingInt(Map.Entry::getValue).reversed()
+                        .thenComparing(Map.Entry::getKey))
+                .forEach(e -> line.append(' ').append(e.getKey()).append('=').append(e.getValue()));
+        return line.toString();
     }
 
     /** e.g. "RePatch 1/1/6, Git-CherryPick 1/1/6" — empty when no rows exist. */
