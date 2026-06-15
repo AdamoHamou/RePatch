@@ -13,7 +13,6 @@ import com.intellij.psi.PsiField;
 import com.intellij.psi.PsiFile;
 import com.intellij.psi.PsiJavaFile;
 import com.intellij.psi.PsiMethod;
-import com.intellij.psi.PsiModifier;
 import com.intellij.psi.PsiPackage;
 import com.intellij.psi.PsiParameter;
 import com.intellij.psi.PsiType;
@@ -243,21 +242,12 @@ public final class PsiSearchService {
                 return false;
             }
             PsiType psiReturnType = method.getReturnType();
-            assert psiReturnType != null;
-            String psiType = psiReturnType.getPresentableText();
-            ParameterObject parameterObject = parameters.get(0);
-            String parameterType = parameterObject.getType();
-            // Check if the return types are the same
-            if (!psiType.equals(parameterType)) {
-                // Check if UML type is class type
-                if (parameterType.contains(".")) {
-                    parameterType = parameterType.substring(parameterType.lastIndexOf(".") + 1);
-                    if (!parameterType.equals(psiType)) {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
+            if (psiReturnType == null) {
+                return false;
+            }
+            // Compare the return type (parameters.get(0) is RefMiner's return).
+            if (!sameType(parameters.get(0).getType(), psiReturnType.getPresentableText())) {
+                return false;
             }
             firstUMLParam = 1;
         } else {
@@ -275,32 +265,56 @@ public final class PsiSearchService {
      */
     private static boolean parameterComparator(int firstUMLParam, List<ParameterObject> parameters,
                                                PsiParameter[] psiParameterList) {
-        ParameterObject parameterObject;
-        String umlType;
-        String psiType;
-        // Check if the parameters are the same
         for (int i = firstUMLParam; i < parameters.size(); i++) {
             int j = i - firstUMLParam;
-            parameterObject = parameters.get(i);
-            PsiParameter psiParameter = psiParameterList[j];
-            umlType = parameterObject.getType();
-
-            String parameterName = psiParameter.getName();
-            psiType = psiParameter.getText();
-            psiType = psiType.substring(0, psiType.lastIndexOf(parameterName) - 1);
-            // If the parameter has the final modifier, remove it for comparison with UML parameter.
-            if (psiParameter.hasModifierProperty(PsiModifier.FINAL)) {
-                psiType = psiType.substring(psiType.indexOf("final ") + 6);
-            }
-            // Replace int... with int[] for comparison with RefMiner object
-            if (psiType.contains("...")) {
-                psiType = psiType.replace("...", "[]");
-            }
-            if (!umlType.equals(psiType)) {
+            String umlType = parameters.get(i).getType();
+            // getType().getPresentableText() gives the type without the parameter
+            // name, annotations, or 'final' — far more robust than slicing
+            // getText(), which dragged those in and broke the comparison (and
+            // crashed on parameter names that were substrings of the type).
+            String psiType = psiParameterList[j].getType().getPresentableText();
+            if (!sameType(umlType, psiType)) {
                 return false;
             }
-
         }
         return true;
+    }
+
+    /**
+     * Whether a RefactoringMiner {@code UMLType.toString()} string and a PSI
+     * {@code getPresentableText()} string denote the same type. The two are
+     * produced by different machinery and differ in cosmetically-significant
+     * but semantically-irrelevant ways the exact-equality check used to reject
+     * (the 12660 matcher misses): generic argument whitespace
+     * ({@code Map<K,V>} vs {@code Map<K, V>}), varargs spelling
+     * ({@code String...} vs {@code String[]}), and qualifier depth
+     * ({@code AdminApiHandler.ApiResult} vs {@code ApiResult},
+     * {@code java.util.Map} vs {@code Map}).
+     *
+     * <p>Tiered to stay conservative: exact match after whitespace/varargs
+     * normalization first; qualifier-stripping is only a fallback, so the
+     * common path never collapses two distinct package-qualified overloads.
+     */
+    static boolean sameType(String umlType, String psiType) {
+        String a = normalizeType(umlType);
+        String b = normalizeType(psiType);
+        if (a.equals(b)) {
+            return true;
+        }
+        return stripQualifiers(a).equals(stripQualifiers(b));
+    }
+
+    /** Drop whitespace and normalize varargs to array form. */
+    static String normalizeType(String type) {
+        if (type == null) {
+            return "";
+        }
+        return type.replaceAll("\\s+", "").replace("...", "[]");
+    }
+
+    /** Reduce every dotted identifier sequence to its last segment, including
+     *  inside generic arguments: {@code a.b.C<d.e.F>} -> {@code C<F>}. */
+    static String stripQualifiers(String type) {
+        return type.replaceAll("(?:[A-Za-z_$][\\w$]*\\.)+", "");
     }
 }
