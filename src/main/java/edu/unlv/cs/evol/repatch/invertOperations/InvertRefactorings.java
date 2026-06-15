@@ -83,8 +83,8 @@ public class InvertRefactorings {
                 // and thrown-exception info are recorded in place.
                 return new InvertExtractMethod(refactoringObject);
             case INLINE_OPERATION:
-                return RefactoringOperation.legacy(description,
-                        () -> new InvertInlineMethod(project).invertInlineMethod(refactoringObject));
+                // Migrated onto the 4A contract: implements RefactoringOperation directly.
+                return new InvertInlineMethod(refactoringObject);
             case RENAME_ATTRIBUTE:
             case MOVE_ATTRIBUTE:
             case MOVE_RENAME_ATTRIBUTE:
