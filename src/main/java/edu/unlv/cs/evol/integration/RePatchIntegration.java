@@ -87,19 +87,25 @@ public class RePatchIntegration {
             if (line == null || line.trim().isEmpty()) {
                 continue;
             }
-            // mainlineUrl,variantUrl,branch,pinnedSha — the variant fork is the
-            // project patches are applied to; branch+SHA pin the evaluation state.
+            // mainlineUrl,variantUrl[,branch,pinnedSha] — the variant fork is the
+            // project patches are applied to. branch+SHA pin the evaluation state;
+            // when omitted (2-column entry, e.g. complete_data), the base defaults
+            // to the fork's default-branch HEAD at clone time under a local
+            // "repatch-eval" branch. Pinning is preferred for reproducibility,
+            // but the 2-column form lets the full dataset run without per-project
+            // SHAs (valid for an A/B comparison as long as both sides clone the
+            // same upstream state).
             String[] values = line.split(",");
-            if (values.length < 4) {
+            if (values.length < 2) {
                 throw new IllegalStateException("Malformed line in " + dataDir + "/repatch_integration_projects"
-                        + " (expected mainlineUrl,variantUrl,branch,pinnedSha): " + line);
+                        + " (expected at least mainlineUrl,variantUrl): " + line);
             }
             String mainLineUrl = values[0].trim();
             String[] mainLineUrls = mainLineUrl.split("/"); // Begin to construct the mainline repo name, e.g. kafka
             String mainLineName = mainLineUrls[mainLineUrls.length - 1];
             String variantUrl = values[1].trim();
-            String branch = values[2].trim();
-            String pinnedSha = values[3].trim();
+            String branch = values.length > 2 && !values[2].trim().isEmpty() ? values[2].trim() : "repatch-eval";
+            String pinnedSha = values.length > 3 ? values[3].trim() : "";
             projectUrl = variantUrl; // This is the project that we want to apply patches to.. it can be interchanged
             if (!line.contains(evaluationProject)) {
                 continue;
@@ -655,10 +661,21 @@ public class RePatchIntegration {
     private void cloneProject(File cloneDir, String url, String branch, String pinnedSha) {
         System.out.println("TASK: cloning project -> " + url + " into " + cloneDir);
         try (Git git = Git.cloneRepository().setURI(url).setDirectory(cloneDir).call()) {
-            git.checkout().setName(pinnedSha).call();
-            git.branchCreate().setName(branch).setStartPoint(pinnedSha).setForce(true).call();
-            git.checkout().setName(branch).call();
-            System.out.println("TASK: pinned " + branch + " at " + pinnedSha);
+            if (pinnedSha != null && !pinnedSha.isEmpty()) {
+                git.checkout().setName(pinnedSha).call();
+                git.branchCreate().setName(branch).setStartPoint(pinnedSha).setForce(true).call();
+                git.checkout().setName(branch).call();
+                System.out.println("TASK: pinned " + branch + " at " + pinnedSha);
+            } else {
+                // No pinned SHA (2-column dataset entry): stay on the fork's
+                // default-branch HEAD and label a local branch there. The base
+                // is the clone-time HEAD, not a fixed commit — reproducibility
+                // across runs depends on the upstream fork not advancing.
+                String head = git.getRepository().resolve("HEAD").getName();
+                git.branchCreate().setName(branch).setForce(true).call();
+                git.checkout().setName(branch).call();
+                System.out.println("TASK: unpinned — using default HEAD " + head + " as base for " + branch);
+            }
         }
         catch(Exception e) {
             deleteRecursively(cloneDir);

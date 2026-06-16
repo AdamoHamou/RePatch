@@ -45,14 +45,15 @@ if [ ! -f "${PROJECTS_FILE}" ]; then
     exit 1
 fi
 
-while IFS=, read -r mainline_url variant_url branch pinned_sha; do
-    # skip blank lines; require all four columns
+# `|| [ -n "${mainline_url}" ]` keeps the final line when the file has no
+# trailing newline (the complete_data list does not end in one).
+while IFS=, read -r mainline_url variant_url branch pinned_sha || [ -n "${mainline_url}" ]; do
+    # blank lines skipped; only the variant URL is required. branch+pinnedSha
+    # are optional (2-column entries, e.g. complete_data): without a pin we
+    # re-baseline to the fork's default remote branch instead of a fixed SHA.
     [ -z "${variant_url}" ] && continue
-    if [ -z "${branch}" ] || [ -z "${pinned_sha}" ]; then
-        echo "[reset-fixtures] FATAL: malformed line in ${PROJECTS_FILE}" >&2
-        echo "[reset-fixtures]   expected mainlineUrl,variantUrl,branch,pinnedSha" >&2
-        exit 1
-    fi
+    # trim CR/whitespace that a non-LF-terminated last column can carry
+    pinned_sha="${pinned_sha//[$'\r\n\t ']/}"
     # <Owner>-<RepoName> from the variant URL, e.g.
     # https://github.com/linkedin/kafka -> linkedin-kafka
     url="${variant_url%/}"; url="${url%.git}"
@@ -64,8 +65,18 @@ while IFS=, read -r mainline_url variant_url branch pinned_sha; do
         echo "[reset-fixtures] ${checkout_dir} not present — pipeline will clone it on first run"
         continue
     fi
-    echo "[reset-fixtures] resetting ${owner}-${repo} to ${pinned_sha:0:12}"
-    git -C "${checkout_dir}" reset --hard "${pinned_sha}" >/dev/null
+    if [ -n "${pinned_sha}" ]; then
+        echo "[reset-fixtures] resetting ${owner}-${repo} to ${pinned_sha:0:12}"
+        git -C "${checkout_dir}" reset --hard "${pinned_sha}" >/dev/null
+    else
+        default_ref="$(git -C "${checkout_dir}" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null || true)"
+        if [ -n "${default_ref}" ]; then
+            echo "[reset-fixtures] re-baselining ${owner}-${repo} (unpinned) to ${default_ref}"
+            git -C "${checkout_dir}" reset --hard "${default_ref}" >/dev/null
+        else
+            echo "[reset-fixtures] WARN: ${owner}-${repo} unpinned and no origin/HEAD; leaving as-is (delete the dir to force a fresh clone)"
+        fi
+    fi
     echo "[reset-fixtures] removing ${owner}-${repo}/.idea"
     rm -rf "${checkout_dir}/.idea"
 done < "${PROJECTS_FILE}"
