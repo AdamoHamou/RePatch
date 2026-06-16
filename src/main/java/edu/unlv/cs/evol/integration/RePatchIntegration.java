@@ -50,6 +50,10 @@ public class RePatchIntegration {
     private final PlatformFacade platform;
     private final VfsSyncService vfs;
     private final PipelineRunResult runResult = new PipelineRunResult();
+    // Which bundled dataset directory under resources/ to read the project and
+    // patch lists from. Set per-run in runComparison; "sample_data" is the
+    // default 5-PR kafka set, "complete_data" is the full dataset.
+    private String dataDir = "sample_data";
 
     public RePatchIntegration() {
         this(new IntelliJ2024PlatformFacade());
@@ -65,11 +69,13 @@ public class RePatchIntegration {
      * Use the given git repository to evaluate IntelliMerge, RePatch, and Git.
      * Use the give git repositories (mainline and variant fork) to integrate patches with RePatch and Git
      */
-    public void runComparison(String path, String evaluationProject) throws Exception {
+    public void runComparison(String path, String evaluationProject, String dataSet) throws Exception {
         // Startup hygiene: a wedged previous run (same JVM) must not leak its
         // failure events into this run's first scenario.
         FailureEventSink.clear();
-        URL url = IntegrationPipeline.class.getResource("/sample_data/repatch_integration_projects");
+        this.dataDir = "complete".equalsIgnoreCase(dataSet) ? "complete_data" : "sample_data";
+        System.out.println("[Pipeline] dataset = " + this.dataDir);
+        URL url = IntegrationPipeline.class.getResource("/" + dataDir + "/repatch_integration_projects");
         assert url != null;
         InputStream inputStream = url.openStream();
         ArrayList<String> lines = Utils.getLinesFromInputStream(inputStream);
@@ -85,7 +91,7 @@ public class RePatchIntegration {
             // project patches are applied to; branch+SHA pin the evaluation state.
             String[] values = line.split(",");
             if (values.length < 4) {
-                throw new IllegalStateException("Malformed line in sample_data/repatch_integration_projects"
+                throw new IllegalStateException("Malformed line in " + dataDir + "/repatch_integration_projects"
                         + " (expected mainlineUrl,variantUrl,branch,pinnedSha): " + line);
             }
             String mainLineUrl = values[0].trim();
@@ -185,7 +191,7 @@ public class RePatchIntegration {
 //
 //    }
     private void evaluateProject(GitRepository repo, Project proj, String projectUrl) throws Exception {
-        URL url = IntegrationPipeline.class.getResource("/sample_data/repatch_integration_patches");
+        URL url = IntegrationPipeline.class.getResource("/" + dataDir + "/repatch_integration_patches");
 
         InputStream inputStream = url.openStream();
         ArrayList<String> lines = Utils.getLinesFromInputStream(inputStream);

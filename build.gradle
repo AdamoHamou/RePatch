@@ -137,6 +137,9 @@ tasks.register('resetIntegrationFixtures', Exec) {
     workingDir = project.projectDir
     commandLine 'bash', "${project.projectDir}/scripts/reset-integration-fixtures.sh"
     environment 'PROJECT_ROOT', project.projectDir.absolutePath
+    // dataSet selects which bundled project/patch list to clone+run: 'sample'
+    // (5-PR kafka, default) or 'complete' (full 9-project / 477-patch dataset).
+    environment 'DATASET', (project.findProperty('dataSet') ?: 'sample').toString()
     onlyIf {
         project.hasProperty('mode') && project.findProperty('mode') == 'integration'
     }
@@ -149,7 +152,10 @@ tasks.named('runIde').configure {
         Object x = project.findProperty("mode")
         Object y = project.findProperty("dataPath")
         Object z = project.findProperty("evaluationProject")
-        args 'integration', x.toString(), y.toString(), z.toString()
+        // dataSet (optional, default 'sample'): 'sample' = 5-PR kafka set,
+        // 'complete' = full dataset under resources/complete_data.
+        Object w = project.findProperty("dataSet") ?: 'sample'
+        args 'integration', x.toString(), y.toString(), z.toString(), w.toString()
     }
     else {
         doFirst { println "Use gradle runIde -Pmode=x where x='integration'" }

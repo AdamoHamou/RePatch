@@ -25,7 +25,15 @@ DATA_DIR="${HOME}/repatch-integration-projects"
 # PROJECT_ROOT is exported by the Gradle task; fall back to script-relative
 # resolution so direct invocation also finds the sandbox.
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-PROJECTS_FILE="${PROJECT_ROOT}/src/main/resources/sample_data/repatch_integration_projects"
+# DATASET (exported by the Gradle task from -PdataSet) chooses which bundled
+# project list to reset/clone: "complete" -> complete_data, else sample_data.
+if [ "${DATASET:-sample}" = "complete" ]; then
+    DATA_SUBDIR="complete_data"
+else
+    DATA_SUBDIR="sample_data"
+fi
+echo "[reset-fixtures] dataset = ${DATA_SUBDIR}"
+PROJECTS_FILE="${PROJECT_ROOT}/src/main/resources/${DATA_SUBDIR}/repatch_integration_projects"
 SANDBOX_LOCK="${PROJECT_ROOT}/.intellijPlatform/sandbox/RePatch/IC-2024.3.7/config/.lock"
 
 echo "[reset-fixtures] dropping database ${DB_NAME}"
