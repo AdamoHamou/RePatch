@@ -220,45 +220,16 @@ public class RePatchIntegration {
                 // add PR to patch table
                 Patch patch = new Patch(Integer.valueOf(values[2]),String.valueOf(values[3]),0, proj);
                 patch.saveIt();
-                // Get the merge commit of the PR
-                // values[0] = Github url of the mainline
-                // values[2] = merged PR number
-
-                GHPullRequest mergedPullRequest = new GitHubUtils().getMergeCommitSha(values[0], Integer.valueOf(values[2]));
-                String prMergeCommit = mergedPullRequest.getMergeCommitSha();
-                String prMergeAuthor = mergedPullRequest.getMergedBy().getName();
-                String prMergeAuthorEmail = mergedPullRequest.getMergedBy().getEmail();
-                long prTimeStamp = mergedPullRequest.getMergedAt().getTime();
-
-                // get the parent of the merge commit
-                VcsFullCommitDetails mergeParents = getCommitDetails(repo, prMergeCommit);
-                List<Hash> parents = mergeParents.getParents();
-                String mergeParentSha = null;
-                if(!parents.isEmpty()) {
-                    mergeParentSha = parents.get(0).asString();
-                    System.out.println("-> Parent SHA (Base/Left): " + mergeParentSha);
-                }
-
-                System.out.println(" -> MergeCommitSha: " + prMergeCommit);
-
-                // fail here if merge parent commit is null <--- This shouldn't happen
-                assert mergeParentSha != null;
-
-                // Now we construct the left, right and base parent commits
-                // since we are using cherry pick, base commit will the parent of the remote commit you want to cherry-pick
-                String gitHeadCommit =  commit.getId().asString();
-
-
-                String rightCommit = prMergeCommit;
-                String leftCommit = gitHeadCommit;
-                String baseCommit  = mergeParentSha;
-
-                String[] data = {rightCommit, leftCommit, baseCommit, prMergeAuthor, prMergeAuthorEmail, String.valueOf(prTimeStamp)};
-
-//                evaluateMergeScenario(values, repo, proj);
-                // One failing PR must not abort the remaining PRs (a server
-                // run once died on PR 1/5 and left the DB empty). Classify the
-                // failure, leave the patch not-done, and continue.
+                // One failing PR must not abort the remaining PRs (a server run
+                // once died on PR 1/5 and left the DB empty; later a full run
+                // died at PR 17374, whose merge commit is unreachable on
+                // apache/kafka — a deleted feature branch — and the resulting
+                // "bad object" error aborted every remaining PR and project).
+                // Classify the failure, leave the patch not-done, and continue.
+                // The try MUST cover the GitHub/merge-commit resolution below,
+                // NOT just evaluateMergeScenario — that resolution (getMergeCommitSha,
+                // getCommitDetails) is exactly where the bad-object / rate-limit
+                // failures are thrown.
                 long scenarioStart = System.currentTimeMillis();
                 // Stamp every line emitted while this PR's scenario runs on
                 // this thread (doMerge, the invert/replay tree, GitUtils) with
@@ -268,6 +239,39 @@ public class RePatchIntegration {
                 LoggingService prLog = LoggingService.forOperation(this.project.getName(), "PR-" + values[2]);
                 LoggingService.setOperationContext("PR-" + values[2]);
                 try {
+                    // Get the merge commit of the PR (values[0] = mainline URL,
+                    // values[2] = merged PR number).
+                    GHPullRequest mergedPullRequest = new GitHubUtils().getMergeCommitSha(values[0], Integer.valueOf(values[2]));
+                    String prMergeCommit = mergedPullRequest.getMergeCommitSha();
+                    String prMergeAuthor = mergedPullRequest.getMergedBy().getName();
+                    String prMergeAuthorEmail = mergedPullRequest.getMergedBy().getEmail();
+                    long prTimeStamp = mergedPullRequest.getMergedAt().getTime();
+
+                    // get the parent of the merge commit
+                    VcsFullCommitDetails mergeParents = getCommitDetails(repo, prMergeCommit);
+                    List<Hash> parents = mergeParents.getParents();
+                    String mergeParentSha = null;
+                    if(!parents.isEmpty()) {
+                        mergeParentSha = parents.get(0).asString();
+                        System.out.println("-> Parent SHA (Base/Left): " + mergeParentSha);
+                    }
+
+                    System.out.println(" -> MergeCommitSha: " + prMergeCommit);
+
+                    // fail here if merge parent commit is null <--- This shouldn't happen
+                    assert mergeParentSha != null;
+
+                    // Now we construct the left, right and base parent commits
+                    // since we are using cherry pick, base commit will the parent of the remote commit you want to cherry-pick
+                    String gitHeadCommit =  commit.getId().asString();
+
+
+                    String rightCommit = prMergeCommit;
+                    String leftCommit = gitHeadCommit;
+                    String baseCommit  = mergeParentSha;
+
+                    String[] data = {rightCommit, leftCommit, baseCommit, prMergeAuthor, prMergeAuthorEmail, String.valueOf(prTimeStamp)};
+
                     PipelineRunResult.ScenarioOutcome outcome = evaluateMergeScenario(data, repo, proj, patch);
                     patch.setDone();
                     patch.saveIt();
