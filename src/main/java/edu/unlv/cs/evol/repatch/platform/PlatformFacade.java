@@ -35,6 +35,14 @@ public interface PlatformFacade {
     Project openProject(Path path);
 
     /**
+     * Close and dispose an open project. Must be called before opening the
+     * next project in a multi-project run: {@code openOrImport} shows the
+     * headless-unsafe "where would you like to open the project" prompt when
+     * another project is already open, which throws on the pipeline's path.
+     */
+    void closeProject(Project project);
+
+    /**
      * Block (in an EDT-safe way) until the project is in smart mode.
      *
      * On 2024.x's headless path the caller is typically the EDT itself, so

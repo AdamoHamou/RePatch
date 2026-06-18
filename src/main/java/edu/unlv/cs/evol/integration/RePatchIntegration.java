@@ -111,23 +111,27 @@ public class RePatchIntegration {
                 continue;
             }
             proj = Project.findFirst("fork_url = ?", projectUrl);
-            if (proj == null) {
-                projectName = openProject(path, projectUrl, mainLineUrl, branch, pinnedSha); // checkout dir name, e.g. linkedin-kafka
-                System.out.println("Starting Project -> " + projectName);
-                proj = new Project(mainLineUrl, mainLineName, projectUrl, projectName);
-                proj.saveIt();
-                GitRepositoryManager repoManager = GitRepositoryManager.getInstance(project);
-                List<GitRepository> repos = repoManager.getRepositories();
-                if (repos.size() == 0) {
-                    repo = registerAndGetRepository(repoManager, path, projectName);
-                } else {
-                    repo = repos.get(0);
-                }
-            } else if (proj.isDone()) {
+            if (proj != null && proj.isDone()) {
                 continue;
-            } else {
-                projectName = openProject(path, projectUrl, mainLineUrl, branch, pinnedSha);
-                System.out.println("Continuing " + projectName);
+            }
+            // One project must not abort the rest of the run. Opening the next
+            // project failed hard (clarin-dspace threw the headless "where to
+            // open the project" prompt, which is really caused by the PREVIOUS
+            // project still being open) and that exception escaped to main,
+            // killing every remaining project. Close the prior project first
+            // (removes the prompt), and wrap open+evaluate per project so a
+            // failure is logged and skipped, not fatal.
+            try {
+                closeOpenProject();
+                if (proj == null) {
+                    projectName = openProject(path, projectUrl, mainLineUrl, branch, pinnedSha); // checkout dir name, e.g. linkedin-kafka
+                    System.out.println("Starting Project -> " + projectName);
+                    proj = new Project(mainLineUrl, mainLineName, projectUrl, projectName);
+                    proj.saveIt();
+                } else {
+                    projectName = openProject(path, projectUrl, mainLineUrl, branch, pinnedSha);
+                    System.out.println("Continuing " + projectName);
+                }
                 GitRepositoryManager repoManager = GitRepositoryManager.getInstance(project);
                 List<GitRepository> repos = repoManager.getRepositories();
                 if (repos.isEmpty()) {
@@ -135,13 +139,16 @@ public class RePatchIntegration {
                 } else {
                     repo = repos.get(0);
                 }
+                System.out.println("Repository for Integration -> " + repo);
+                evaluateProject(repo, proj, projectUrl);
+                proj.setDone();
+                proj.saveIt();
+            } catch (Exception | Error e) {
+                System.out.println("[Pipeline] PROJECT_FAILED " + projectUrl + " — "
+                        + e.getClass().getSimpleName() + ": " + e.getMessage());
+                e.printStackTrace();
+                // leave proj not-done so a later run can retry it; move on.
             }
-            System.out.println("Repository for Integration -> " + repo);
-            evaluateProject(repo, proj, projectUrl);
-            proj.setDone();
-            proj.saveIt();
-
-
         }
         // While Base is still open — the summary includes per-PR verdicts.
         runResult.printSummary();
@@ -707,6 +714,19 @@ public class RePatchIntegration {
      * e.g. linkedin-kafka — so forks can't be confused with their mainline
      * (see RepoNaming). Returns the directory name.
      */
+    /**
+     * Close the project opened by the previous loop iteration, if any, so the
+     * next {@link #openProject} doesn't trip openOrImport's headless-unsafe
+     * "where would you like to open the project" prompt (shown only when a
+     * project is already open). No-op on the first iteration.
+     */
+    private void closeOpenProject() {
+        if (this.project != null) {
+            platform.closeProject(this.project);
+            this.project = null;
+        }
+    }
+
     private String openProject(String path, String url, String remoteOriginUrl, String branch, String pinnedSha) {
         String dirName = RepoNaming.directoryName(url);
 
