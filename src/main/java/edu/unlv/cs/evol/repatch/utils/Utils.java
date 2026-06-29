@@ -374,8 +374,9 @@ public class Utils {
         PsiFile[] psiFiles = FilenameIndex.getFilesByName(project, fileName, GlobalSearchScope.allScope(project));
         // If no files are found, give an error message for debugging
         if(psiFiles.length == 0) {
-            System.out.println("FAILED HERE");
-            System.out.println(filePath);
+            // [RePatch-DIAG] FilenameIndex returned nothing -> VFS/index stale or dumb mode (hypothesis #2).
+            System.out.println("[RePatch-DIAG] FilenameIndex found no file named '" + fileName
+                    + "' for path=" + filePath + " dumb=" + DumbService.isDumb(project));
             return null;
         }
         for (PsiFile file : psiFiles) {
@@ -420,11 +421,41 @@ public class Utils {
     public PsiClass getPsiClassFromClassAndFileNames(String className, String filePath) {
         JavaPsiFacade jPF = new JavaPsiFacadeImpl(project);
         PsiClass psiClass = jPF.findClass(className, GlobalSearchScope.allScope((project)));
+        // [RePatch-DIAG] Discriminate the root cause of silent application failures on IntelliJ 2024.x:
+        //   findClass == null while dumb == true  -> indexing / smart-mode timing  (hypothesis #2)
+        //   findClass == null while dumb == false -> source-root / project-model not configured (hypothesis #1)
+        System.out.println("[RePatch-DIAG] findClass(" + className + ")=" + psiClass
+                + " dumb=" + DumbService.isDumb(project));
         // If the class isn't found, there might not have been a gradle file and we need to find the class another way
         if(psiClass == null) {
             psiClass = getPsiClassByFilePath(filePath, className);
         }
+        if(psiClass == null) {
+            // [RePatch-DIAG] Both resolution paths failed -> dump the module/source-root model so we can see
+            // whether the auto-opened project was ever configured as a Java module with source roots.
+            logProjectModelForDiagnostics(className, filePath);
+        } else {
+            System.out.println("[RePatch-DIAG] resolved " + className + " -> qName=" + psiClass.getQualifiedName());
+        }
         return psiClass;
+    }
+
+    /*
+     * [RePatch-DIAG] Diagnostic only (no behavioral change): prints the project's modules and their source
+     * roots. Lets us tell apart "PSI index not ready" from "project has no source roots, so FQNs never resolve".
+     */
+    private void logProjectModelForDiagnostics(String className, String filePath) {
+        System.out.println("[RePatch-DIAG] FAILED to resolve class=" + className + " file=" + filePath
+                + " dumb=" + DumbService.isDumb(project));
+        Module[] modules = ModuleManager.getInstance(project).getModules();
+        System.out.println("[RePatch-DIAG] module count=" + modules.length);
+        for (Module module : modules) {
+            VirtualFile[] roots = ModuleRootManager.getInstance(module).getSourceRoots();
+            System.out.println("[RePatch-DIAG]   module '" + module.getName() + "' sourceRoots=" + roots.length);
+            for (VirtualFile root : roots) {
+                System.out.println("[RePatch-DIAG]     " + root.getPath());
+            }
+        }
     }
 
     public static PsiMethod getPsiMethod(PsiClass psiClass, MethodSignatureObject methodSignatureObject) {
