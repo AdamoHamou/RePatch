@@ -471,6 +471,13 @@ public class RePatchIntegration {
             refMergeResult.saveIt();
             // Add conflicting files to database;
             for (Pair<ConflictingFileData, List<ConflictBlockData>> pair : refMergeConflicts) {
+                // [RePatch-DIAG] Surface the file(s) behind the verdict (e.g. 12289's 1/5/57 = one
+                // file) so the residual conflict can be mapped to the invert/replay ops that failed
+                // — the run shows the ConsumerTask/PrimaryConsumerTask rename-state cluster dominating
+                // POSTCONDITION_BROKEN; this confirms whether that cluster is what stays conflicting.
+                System.out.println("[RePatch-DIAG] residual conflicting file (RePatch): "
+                        + pair.getLeft().getFilePath() + " blocks=" + pair.getRight().size()
+                        + " loc=" + pair.getLeft().getConflictingLOC());
                 ConflictingFile conflictingFile = new ConflictingFile(refMergeResult, pair.getLeft());
                 conflictingFile.saveIt();
                 // Add each conflict block for the conflicting file
