@@ -59,6 +59,7 @@ public final class PsiSearchService {
         return platform.runInSmartReadAction(project, () -> {
             PsiClass psiClass = JavaPsiFacade.getInstance(project)
                     .findClass(className, GlobalSearchScope.allScope(project));
+            boolean viaFacade = psiClass != null;
             // The 2024 platform scans changed files in smart mode, so right
             // after a checkout the indexes can be silently stale: findClass
             // and even FilenameIndex miss files that are on disk. We know the
@@ -67,11 +68,21 @@ public final class PsiSearchService {
             if (psiClass == null) {
                 psiClass = findClassByVfsPathInReadAction(project, filePath, className);
             }
+            boolean viaVfs = !viaFacade && psiClass != null;
             // If the class isn't found, there might not have been a gradle file
             // and we need to find the class another way
             if (psiClass == null) {
                 psiClass = findClassByFilePathInReadAction(project, filePath, className);
             }
+            boolean viaIndex = !viaFacade && !viaVfs && psiClass != null;
+            // [RePatch-DIAG] Which of the three strategies resolved the class (or none). After the
+            // provisionSourceRoots fix at project open, facade=true should become the common case;
+            // before it, facade was 0/234. base= confirms the project opened at the checkout, not
+            // the IDE install dir.
+            System.out.println("[RePatch-DIAG] findClass(" + className + ")"
+                    + " result=" + (psiClass != null ? "RESOLVED" : "NULL")
+                    + " via=" + (viaFacade ? "facade" : viaVfs ? "vfsPath" : viaIndex ? "index" : "none")
+                    + " base=" + project.getBasePath());
             return psiClass;
         });
     }
@@ -128,8 +139,9 @@ public final class PsiSearchService {
         PsiFile[] psiFiles = FilenameIndex.getFilesByName(project, fileName, GlobalSearchScope.allScope(project));
         // If no files are found, give an error message for debugging
         if (psiFiles.length == 0) {
-            System.out.println("FAILED HERE");
-            System.out.println(filePath);
+            // [RePatch-DIAG] FilenameIndex empty -> file not indexed (no source root / stale index).
+            System.out.println("[RePatch-DIAG] FilenameIndex found no file named '" + fileName
+                    + "' for path=" + filePath);
             return null;
         }
         for (PsiFile file : psiFiles) {

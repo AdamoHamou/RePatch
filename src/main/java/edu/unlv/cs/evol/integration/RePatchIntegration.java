@@ -12,6 +12,7 @@ import edu.unlv.cs.evol.repatch.utils.FailureEventSink;
 import edu.unlv.cs.evol.repatch.utils.LoggingService;
 import edu.unlv.cs.evol.repatch.platform.IntelliJ2024PlatformFacade;
 import edu.unlv.cs.evol.repatch.platform.PlatformFacade;
+import edu.unlv.cs.evol.repatch.platform.ProjectRootsService;
 import edu.unlv.cs.evol.repatch.platform.VfsSyncService;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.project.DumbService;
@@ -705,6 +706,13 @@ public class RePatchIntegration {
             throw new IllegalStateException("Failed to open project at " + pathToProject
                     + " — " + e.getMessage(), e);
         }
+        // The checkout has no .idea/Gradle import, so on 2024.x it opens as a hollow single
+        // module with zero source roots — and the PSI-diag verdict proved that is why every
+        // replay/invert op silently no-ops (JavaPsiFacade.findClass can't resolve a FQN without
+        // a source root). Register the conventional Java source roots across the checkout now,
+        // before any PSI resolution happens, so findClass resolves and the refactoring processors
+        // get a real module model to compute usages against.
+        new ProjectRootsService(platform).provisionSourceRoots(this.project);
         return dirName;
 
     }
