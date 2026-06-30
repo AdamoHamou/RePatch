@@ -307,7 +307,7 @@ public final class PsiSearchService {
      * normalization first; qualifier-stripping is only a fallback, so the
      * common path never collapses two distinct package-qualified overloads.
      */
-    static boolean sameType(String umlType, String psiType) {
+    public static boolean sameType(String umlType, String psiType) {
         String a = normalizeType(umlType);
         String b = normalizeType(psiType);
         if (a.equals(b)) {

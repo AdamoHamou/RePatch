@@ -4,6 +4,7 @@ import edu.unlv.cs.evol.repatch.refactoringObjects.ExtractMethodObject;
 import edu.unlv.cs.evol.repatch.refactoringObjects.RefactoringObject;
 import edu.unlv.cs.evol.repatch.refactoringObjects.typeObjects.MethodSignatureObject;
 import edu.unlv.cs.evol.repatch.refactoringObjects.typeObjects.ParameterObject;
+import edu.unlv.cs.evol.repatch.platform.PsiSearchService;
 import edu.unlv.cs.evol.repatch.utils.Utils;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.command.CommandProcessor;
@@ -136,8 +137,13 @@ public class ReplayExtractMethod {
         PsiMethod extractedPsiMethod = processor.getExtractedMethod();
         if(extractedPsiMethod.getParameterList().getParametersCount() > 1) {
             ParameterInfoImpl[] parameterInfo = getParameterInfo(extractedPsiMethod, operation);
-            // Temporary workaround until we rename the parameters in duplicates
-            if(parameterInfo[0] != null) {
+            // ChangeSignatureProcessor NPEs deep inside JavaChangeInfoImpl when ANY element of the
+            // parameter-info array is null — it reads info.oldParameterIndex on every element. A slot
+            // stays null when getParameterInfo can't match an expected parameter to a PSI parameter.
+            // The old guard only checked parameterInfo[0], so a null at index 1+ slipped through and
+            // crashed (PROCESSOR_THREW). Require a fully-populated array; otherwise skip the signature
+            // update and leave the method as ExtractMethodProcessor produced it.
+            if(hasNoNullSlots(parameterInfo)) {
                 if(thrownExceptionInfo == null) {
                     ChangeSignatureProcessor changeSignatureProcessor =
                             new ChangeSignatureProcessor(project, extractedPsiMethod, false, null,
@@ -151,7 +157,36 @@ public class ReplayExtractMethod {
                     changeSignatureProcessor.run();
                 }
             }
+            else {
+                // [RePatch-DIAG] couldn't fully match the extracted signature; skip rather than crash.
+                System.out.println("[RePatch-DIAG] updateSignature skipped for '" + refactoringName
+                        + "': " + describeNulls(parameterInfo));
+            }
         }
+    }
+
+    /** ChangeSignatureProcessor is safe only when every parameter-info slot is populated. */
+    private static boolean hasNoNullSlots(ParameterInfoImpl[] parameterInfo) {
+        if(parameterInfo.length == 0) {
+            return false;
+        }
+        for(ParameterInfoImpl info : parameterInfo) {
+            if(info == null) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Human-readable count of unmatched (null) parameter slots, for the skip log. */
+    private static String describeNulls(ParameterInfoImpl[] parameterInfo) {
+        int nulls = 0;
+        for(ParameterInfoImpl info : parameterInfo) {
+            if(info == null) {
+                nulls++;
+            }
+        }
+        return nulls + "/" + parameterInfo.length + " parameter slots unmatched";
     }
 
     /*
@@ -276,7 +311,12 @@ public class ReplayExtractMethod {
                 String psiParameterName = psiParameter.getName();
                 PsiType psiType = psiParameter.getType();
                 String psiParameterType = psiType.getPresentableText();
-                if(umlParameterName.equals(psiParameterName) && umlParameterType.equals(psiParameterType)) {
+                // Names are unique within a parameter list, so match name exactly but compare the
+                // type with the tolerant matcher (whitespace / varargs / qualifier differences
+                // between RefMiner's UML type and PSI's presentable text) — exact equals here was
+                // leaving array slots null, which crashed ChangeSignatureProcessor downstream.
+                if(umlParameterName.equals(psiParameterName)
+                        && PsiSearchService.sameType(umlParameterType, psiParameterType)) {
                     int index = psiParameterList.getParameterIndex(psiParameter);
                     parameterInfo = ParameterInfoImpl.create(index).withName(psiParameterName).withType(psiType);
                     parameterInfoImplArray[i-1] = parameterInfo;
