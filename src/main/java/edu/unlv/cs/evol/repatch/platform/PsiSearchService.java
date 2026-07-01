@@ -109,6 +109,46 @@ public final class PsiSearchService {
     }
 
     /**
+     * Resolve the primary (public, file-name-matching) top-level class of the
+     * file at {@code filePath}, ignoring the recorded class name. Index-free.
+     *
+     * <p>Used as a last resort for member refactorings whose enclosing class
+     * was itself renamed in the same PR (e.g. {@code ConsumerTask} ->
+     * {@code PrimaryConsumerTask}): RefactoringMiner records the member with the
+     * old class name but the new file, so name-based resolution can never match.
+     * By Java convention the public top-level class shares the file name, so we
+     * resolve by file identity instead. Falls back to the sole top-level class
+     * when no name matches (a file with exactly one top-level class).
+     */
+    public PsiClass findClassByFileNameMatch(Project project, String filePath) {
+        return platform.runInSmartReadAction(project, () -> {
+            String basePath = project.getBasePath();
+            if (basePath == null || filePath == null) {
+                return null;
+            }
+            VirtualFile virtualFile = LocalFileSystem.getInstance().findFileByPath(basePath + "/" + filePath);
+            if (virtualFile == null) {
+                return null;
+            }
+            PsiFile psiFile = PsiManager.getInstance(project).findFile(virtualFile);
+            if (!(psiFile instanceof PsiJavaFile)) {
+                return null;
+            }
+            PsiClass[] classes = ((PsiJavaFile) psiFile).getClasses();
+            String fileName = filePath.substring(filePath.lastIndexOf("/") + 1);
+            String simpleName = fileName.endsWith(".java")
+                    ? fileName.substring(0, fileName.length() - ".java".length())
+                    : fileName;
+            for (PsiClass it : classes) {
+                if (simpleName.equals(it.getName())) {
+                    return it;
+                }
+            }
+            return classes.length == 1 ? classes[0] : null;
+        });
+    }
+
+    /**
      * Resolve a package by qualified name, waiting for the index when dumb.
      * Returns {@code null} when the package does not exist.
      */

@@ -170,7 +170,9 @@ public class EvaluationUtils {
                 }
 
                 ConflictBlockData mergeConflict = new ConflictBlockData(leftContent, rightContent, startLOC, endLOC, path, mergeTool, isComment);
-                mergeConflicts.add(mergeConflict);
+                if (!skipForTool(isComment, mergeTool)) {
+                    mergeConflicts.add(mergeConflict);
+                }
                 iterator.remove();
 
             } else {
@@ -191,6 +193,18 @@ public class EvaluationUtils {
             writeLinesToFile(path, lines);
         }
         return mergeConflicts;
+    }
+
+    /*
+     * RePatch resolves trivial comment-only conflicts (Javadoc and line
+     * comments) as part of its refactoring-aware merge, where plain git
+     * cherry-pick leaves the markers in place. Count comment conflicts for the
+     * git baseline but drop them for RePatch, restoring the original tool's
+     * behavior (the migration had silently lost it after the comment-stripping
+     * step was removed). Comment-only conflicts carry no semantic merge risk.
+     */
+    private static boolean skipForTool(boolean isComment, String mergeTool) {
+        return isComment && "RePatch".equals(mergeTool);
     }
 
     /*
@@ -257,7 +271,9 @@ public class EvaluationUtils {
 
 
                 ConflictBlockData mergeConflict = new ConflictBlockData(leftContent, rightContent, startLOC, endLOC, path, mergeTool, isComment);
-                mergeConflicts.add(mergeConflict);
+                if (!skipForTool(isComment, mergeTool)) {
+                    mergeConflicts.add(mergeConflict);
+                }
                 // reset the flags
                 leftConflictingContent = new StringBuilder();
                 rightConflictingContent = new StringBuilder();
@@ -290,6 +306,14 @@ public class EvaluationUtils {
             return true;
         }
         else if(content.startsWith("//") && isSingleLine) {
+            return true;
+        }
+        // Javadoc / block-comment fragment: when a conflict falls INSIDE a
+        // /* ... */ block, the markers sit outside the delimiters, so the
+        // captured content is pure comment body — continuation lines each
+        // starting with '*', or an unterminated block start/end. Java has no
+        // statement that begins with '*', so this does not misclassify code.
+        else if(content.startsWith("*") || content.startsWith("/*") || content.endsWith("*/")) {
             return true;
         }
         return false;

@@ -12,6 +12,7 @@ import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.project.DumbService;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.project.ProjectManager;
 import com.intellij.openapi.vfs.VirtualFileManager;
 import com.intellij.psi.PsiDocumentManager;
 import com.intellij.usages.UsageView;
@@ -58,6 +59,21 @@ public final class IntelliJ2024PlatformFacade implements PlatformFacade {
     @Override
     public Project openProject(Path path) {
         return ProjectUtil.openOrImport(path, null, false);
+    }
+
+    /**
+     * Close and dispose a project. {@code closeAndDispose} is public API and,
+     * on the pipeline's EDT-bound headless path, runs synchronously. Closing
+     * the prior project before opening the next is what keeps
+     * {@code openOrImport} from showing the "where would you like to open the
+     * project" prompt (which throws headlessly) on a multi-project run.
+     */
+    @Override
+    public void closeProject(Project project) {
+        if (project == null || project.isDisposed()) {
+            return;
+        }
+        ProjectManager.getInstance().closeAndDispose(project);
     }
 
     @Override

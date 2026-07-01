@@ -24,9 +24,16 @@ public class InMemoryPlatformFacade implements PlatformFacade {
     public int saveAllDocumentsCount;
     public int waitForSmartModeCount;
 
+    public int closeProjectCount;
+
     @Override
     public Project openProject(Path path) {
         throw new UnsupportedOperationException("InMemoryPlatformFacade cannot open projects");
+    }
+
+    @Override
+    public void closeProject(Project project) {
+        closeProjectCount++;
     }
 
     @Override

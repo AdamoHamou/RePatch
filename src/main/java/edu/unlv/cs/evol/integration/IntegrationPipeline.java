@@ -32,7 +32,11 @@ public class IntegrationPipeline implements ApplicationStarter {
                 DatabaseUtils.createDatabase(true);
                 String path = System.getProperty("user.home") +"/" + args.get(2);
                 String projectName = args.get(3);
-                startEvaluation(path, projectName);
+                // Optional 5th arg selects the bundled dataset: "complete" runs
+                // the full project/patch lists, anything else (or absent) keeps
+                // the default 5-PR "sample" set.
+                String dataSet = args.size() > 4 ? args.get(4) : "sample";
+                startEvaluation(path, projectName, dataSet);
             }
         } catch(Throwable e) {
             System.out.println(e.getMessage());
@@ -60,15 +64,16 @@ public class IntegrationPipeline implements ApplicationStarter {
      * The results will be stored in the database.
      * @param path The path to the project to evaluate.
      * @param evaluationProject The name of the project to evaluate.
-     * @throws EXCEPTION If an error occurs during the evaluation.                              
+     * @param dataSet "complete" for the full dataset, otherwise the sample set.
+     * @throws EXCEPTION If an error occurs during the evaluation.
      */
-    private void startEvaluation(String path, String evaluationProject) {
+    private void startEvaluation(String path, String evaluationProject, String dataSet) {
         try {
             Base.open("com.mysql.jdbc.Driver", DatabaseUtils.getDatabaseUrl(),
                     DatabaseUtils.getDatabaseUser(), DatabaseUtils.getDatabasePassword());
 
             RePatchIntegration evaluation = new RePatchIntegration();
-            evaluation.runComparison(path, evaluationProject);
+            evaluation.runComparison(path, evaluationProject, dataSet);
             Base.close();
         } catch (Throwable e) {
             e.printStackTrace();

@@ -67,6 +67,25 @@ public class InvertMoveRenameMethod implements RefactoringOperation {
 
         String className = moveRenameMethodObject.isMoveMethod() ? destinationClassName : originalClassName;
         psiClass = context.getPsiSearch().findClass(project, className, filePath);
+        // The enclosing class may itself have been renamed in the same PR (e.g.
+        // ConsumerTask -> PrimaryConsumerTask): RefactoringMiner records this
+        // member with the old class name but the renamed destination file, so
+        // name-based resolution can never match. Fall back to the file's primary
+        // class. Whether the coupled class-rename inversion has already run
+        // decides which file currently holds the class (the renamed-back
+        // original file or the still-renamed destination file), and invert
+        // order isn't guaranteed — so try both. The method is still under its
+        // new name at invert time either way, so guard on the refactored
+        // (destination) method to avoid binding an unrelated class.
+        if (psiClass == null) {
+            for (String candidatePath : new String[]{filePath, moveRenameMethodObject.getOriginalFilePath()}) {
+                PsiClass byFile = context.getPsiSearch().findClassByFileNameMatch(project, candidatePath);
+                if (byFile != null && PsiSearchService.findMethod(byFile, refactored) != null) {
+                    psiClass = byFile;
+                    break;
+                }
+            }
+        }
         // If we cannot find the PSI class, do not try to invert the refactoring
         if (psiClass == null) {
             throw new PreconditionFailed("class " + className + " not resolvable from " + filePath);
@@ -122,6 +141,21 @@ public class InvertMoveRenameMethod implements RefactoringOperation {
         String originalFilePath = moveRenameMethodObject.getOriginalFilePath();
         PsiClass originalClass = context.getPsiSearch()
                 .findClass(context.getProject(), originalClassName, originalFilePath);
+        // Coupled-rename fallback (see prepare): when the enclosing class was
+        // renamed in this PR, the original (name, file) pair never resolves even
+        // though the method was correctly renamed back. Look in the file's
+        // primary class on either side of the coupled class rename, accepting it
+        // only if it carries the restored (original) method — so a genuinely
+        // missing restore is still reported.
+        if (originalClass == null) {
+            for (String candidatePath : new String[]{originalFilePath, moveRenameMethodObject.getDestinationFilePath()}) {
+                PsiClass byFile = context.getPsiSearch().findClassByFileNameMatch(context.getProject(), candidatePath);
+                if (byFile != null && PsiSearchService.findMethod(byFile, original) != null) {
+                    originalClass = byFile;
+                    break;
+                }
+            }
+        }
         if (originalClass == null) {
             return "original class " + originalClassName + " not resolvable from " + originalFilePath;
         }

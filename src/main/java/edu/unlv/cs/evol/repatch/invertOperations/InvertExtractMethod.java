@@ -152,23 +152,33 @@ public class InvertExtractMethod implements RefactoringOperation {
             return null;
         }
 
-        // Get the correct PSI reference
+        // Get the correct PSI reference. ReferencesSearch is index-backed, and
+        // the 2024 platform can return no references right after a checkout
+        // while the index is still incorporating the changed files — so an
+        // empty result usually means a stale index, not an absent call. Fall
+        // back to an index-free walk of the source method body in that case
+        // (findClass uses the same VFS-direct escape hatch for this window).
+        PsiElement psiElement;
         Query<PsiReference> psiReferences = ReferencesSearch.search(extractedMethod);
-        if (psiReferences.findFirst() == null) {
-            return null;
-        }
-        PsiElement psiElement = psiReferences.findFirst().getElement();
-
-        if (psiElement instanceof PsiMethod) {
-            for (PsiReference psiReference : psiReferences) {
-                psiElement = (PsiElement) psiReference;
-                if (psiElement instanceof PsiMethod) {
-                    continue;
-                }
-                PsiElement containingMethod = PsiTreeUtil.getParentOfType(psiElement, PsiMethod.class);
-                assert containingMethod != null;
-                if (containingMethod.isEquivalentTo(psiMethod)) {
-                    break;
+        PsiReference firstRef = psiReferences.findFirst();
+        if (firstRef == null) {
+            psiElement = locateInvocationInBody(psiCodeBlock, extractedMethod);
+            if (psiElement == null) {
+                return null;
+            }
+        } else {
+            psiElement = firstRef.getElement();
+            if (psiElement instanceof PsiMethod) {
+                for (PsiReference psiReference : psiReferences) {
+                    psiElement = psiReference.getElement();
+                    if (psiElement instanceof PsiMethod) {
+                        continue;
+                    }
+                    PsiElement containingMethod = PsiTreeUtil.getParentOfType(psiElement, PsiMethod.class);
+                    assert containingMethod != null;
+                    if (containingMethod.isEquivalentTo(psiMethod)) {
+                        break;
+                    }
                 }
             }
         }
@@ -206,6 +216,33 @@ public class InvertExtractMethod implements RefactoringOperation {
         // Handle case when next sibling is the end of the code block
         surroundingElements[1] = nextSibling;
         return surroundingElements;
+    }
+
+    /*
+     * Index-free location of the extracted method's call site inside the source
+     * method body. Used when ReferencesSearch returns nothing because the 2024
+     * platform's index is still catching up with a fresh checkout. Prefers a
+     * call that resolves to the extracted method; otherwise accepts a call that
+     * matches the extracted method's name and argument count.
+     */
+    private PsiElement locateInvocationInBody(PsiCodeBlock body, PsiMethod extractedMethod) {
+        String name = extractedMethod.getName();
+        int paramCount = extractedMethod.getParameterList().getParametersCount();
+        PsiMethodCallExpression nameAndArity = null;
+        for (PsiMethodCallExpression call : PsiTreeUtil.findChildrenOfType(body, PsiMethodCallExpression.class)) {
+            PsiReferenceExpression methodExpr = call.getMethodExpression();
+            if (!name.equals(methodExpr.getReferenceName())) {
+                continue;
+            }
+            PsiMethod resolved = call.resolveMethod();
+            if (resolved != null && resolved.isEquivalentTo(extractedMethod)) {
+                return methodExpr;
+            }
+            if (nameAndArity == null && call.getArgumentList().getExpressionCount() == paramCount) {
+                nameAndArity = call;
+            }
+        }
+        return nameAndArity != null ? nameAndArity.getMethodExpression() : null;
     }
 
     private ThrownExceptionInfo[] getThrownExceptionInfo(PsiMethod psiMethod) {

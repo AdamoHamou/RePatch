@@ -51,6 +51,10 @@ public class RePatchIntegration {
     private final PlatformFacade platform;
     private final VfsSyncService vfs;
     private final PipelineRunResult runResult = new PipelineRunResult();
+    // Which bundled dataset directory under resources/ to read the project and
+    // patch lists from. Set per-run in runComparison; "sample_data" is the
+    // default 5-PR kafka set, "complete_data" is the full dataset.
+    private String dataDir = "sample_data";
 
     public RePatchIntegration() {
         this(new IntelliJ2024PlatformFacade());
@@ -66,11 +70,13 @@ public class RePatchIntegration {
      * Use the given git repository to evaluate IntelliMerge, RePatch, and Git.
      * Use the give git repositories (mainline and variant fork) to integrate patches with RePatch and Git
      */
-    public void runComparison(String path, String evaluationProject) throws Exception {
+    public void runComparison(String path, String evaluationProject, String dataSet) throws Exception {
         // Startup hygiene: a wedged previous run (same JVM) must not leak its
         // failure events into this run's first scenario.
         FailureEventSink.clear();
-        URL url = IntegrationPipeline.class.getResource("/sample_data/repatch_integration_projects");
+        this.dataDir = "complete".equalsIgnoreCase(dataSet) ? "complete_data" : "sample_data";
+        System.out.println("[Pipeline] dataset = " + this.dataDir);
+        URL url = IntegrationPipeline.class.getResource("/" + dataDir + "/repatch_integration_projects");
         assert url != null;
         InputStream inputStream = url.openStream();
         ArrayList<String> lines = Utils.getLinesFromInputStream(inputStream);
@@ -82,41 +88,51 @@ public class RePatchIntegration {
             if (line == null || line.trim().isEmpty()) {
                 continue;
             }
-            // mainlineUrl,variantUrl,branch,pinnedSha — the variant fork is the
-            // project patches are applied to; branch+SHA pin the evaluation state.
+            // mainlineUrl,variantUrl[,branch,pinnedSha] — the variant fork is the
+            // project patches are applied to. branch+SHA pin the evaluation state;
+            // when omitted (2-column entry, e.g. complete_data), the base defaults
+            // to the fork's default-branch HEAD at clone time under a local
+            // "repatch-eval" branch. Pinning is preferred for reproducibility,
+            // but the 2-column form lets the full dataset run without per-project
+            // SHAs (valid for an A/B comparison as long as both sides clone the
+            // same upstream state).
             String[] values = line.split(",");
-            if (values.length < 4) {
-                throw new IllegalStateException("Malformed line in sample_data/repatch_integration_projects"
-                        + " (expected mainlineUrl,variantUrl,branch,pinnedSha): " + line);
+            if (values.length < 2) {
+                throw new IllegalStateException("Malformed line in " + dataDir + "/repatch_integration_projects"
+                        + " (expected at least mainlineUrl,variantUrl): " + line);
             }
             String mainLineUrl = values[0].trim();
             String[] mainLineUrls = mainLineUrl.split("/"); // Begin to construct the mainline repo name, e.g. kafka
             String mainLineName = mainLineUrls[mainLineUrls.length - 1];
             String variantUrl = values[1].trim();
-            String branch = values[2].trim();
-            String pinnedSha = values[3].trim();
+            String branch = values.length > 2 && !values[2].trim().isEmpty() ? values[2].trim() : "repatch-eval";
+            String pinnedSha = values.length > 3 ? values[3].trim() : "";
             projectUrl = variantUrl; // This is the project that we want to apply patches to.. it can be interchanged
             if (!line.contains(evaluationProject)) {
                 continue;
             }
             proj = Project.findFirst("fork_url = ?", projectUrl);
-            if (proj == null) {
-                projectName = openProject(path, projectUrl, mainLineUrl, branch, pinnedSha); // checkout dir name, e.g. linkedin-kafka
-                System.out.println("Starting Project -> " + projectName);
-                proj = new Project(mainLineUrl, mainLineName, projectUrl, projectName);
-                proj.saveIt();
-                GitRepositoryManager repoManager = GitRepositoryManager.getInstance(project);
-                List<GitRepository> repos = repoManager.getRepositories();
-                if (repos.size() == 0) {
-                    repo = registerAndGetRepository(repoManager, path, projectName);
-                } else {
-                    repo = repos.get(0);
-                }
-            } else if (proj.isDone()) {
+            if (proj != null && proj.isDone()) {
                 continue;
-            } else {
-                projectName = openProject(path, projectUrl, mainLineUrl, branch, pinnedSha);
-                System.out.println("Continuing " + projectName);
+            }
+            // One project must not abort the rest of the run. Opening the next
+            // project failed hard (clarin-dspace threw the headless "where to
+            // open the project" prompt, which is really caused by the PREVIOUS
+            // project still being open) and that exception escaped to main,
+            // killing every remaining project. Close the prior project first
+            // (removes the prompt), and wrap open+evaluate per project so a
+            // failure is logged and skipped, not fatal.
+            try {
+                closeOpenProject();
+                if (proj == null) {
+                    projectName = openProject(path, projectUrl, mainLineUrl, branch, pinnedSha); // checkout dir name, e.g. linkedin-kafka
+                    System.out.println("Starting Project -> " + projectName);
+                    proj = new Project(mainLineUrl, mainLineName, projectUrl, projectName);
+                    proj.saveIt();
+                } else {
+                    projectName = openProject(path, projectUrl, mainLineUrl, branch, pinnedSha);
+                    System.out.println("Continuing " + projectName);
+                }
                 GitRepositoryManager repoManager = GitRepositoryManager.getInstance(project);
                 List<GitRepository> repos = repoManager.getRepositories();
                 if (repos.isEmpty()) {
@@ -124,13 +140,16 @@ public class RePatchIntegration {
                 } else {
                     repo = repos.get(0);
                 }
+                System.out.println("Repository for Integration -> " + repo);
+                evaluateProject(repo, proj, projectUrl);
+                proj.setDone();
+                proj.saveIt();
+            } catch (Exception | Error e) {
+                System.out.println("[Pipeline] PROJECT_FAILED " + projectUrl + " — "
+                        + e.getClass().getSimpleName() + ": " + e.getMessage());
+                e.printStackTrace();
+                // leave proj not-done so a later run can retry it; move on.
             }
-            System.out.println("Repository for Integration -> " + repo);
-            evaluateProject(repo, proj, projectUrl);
-            proj.setDone();
-            proj.saveIt();
-
-
         }
         // While Base is still open — the summary includes per-PR verdicts.
         runResult.printSummary();
@@ -186,7 +205,7 @@ public class RePatchIntegration {
 //
 //    }
     private void evaluateProject(GitRepository repo, Project proj, String projectUrl) throws Exception {
-        URL url = IntegrationPipeline.class.getResource("/sample_data/repatch_integration_patches");
+        URL url = IntegrationPipeline.class.getResource("/" + dataDir + "/repatch_integration_patches");
 
         InputStream inputStream = url.openStream();
         ArrayList<String> lines = Utils.getLinesFromInputStream(inputStream);
@@ -209,45 +228,16 @@ public class RePatchIntegration {
                 // add PR to patch table
                 Patch patch = new Patch(Integer.valueOf(values[2]),String.valueOf(values[3]),0, proj);
                 patch.saveIt();
-                // Get the merge commit of the PR
-                // values[0] = Github url of the mainline
-                // values[2] = merged PR number
-
-                GHPullRequest mergedPullRequest = new GitHubUtils().getMergeCommitSha(values[0], Integer.valueOf(values[2]));
-                String prMergeCommit = mergedPullRequest.getMergeCommitSha();
-                String prMergeAuthor = mergedPullRequest.getMergedBy().getName();
-                String prMergeAuthorEmail = mergedPullRequest.getMergedBy().getEmail();
-                long prTimeStamp = mergedPullRequest.getMergedAt().getTime();
-
-                // get the parent of the merge commit
-                VcsFullCommitDetails mergeParents = getCommitDetails(repo, prMergeCommit);
-                List<Hash> parents = mergeParents.getParents();
-                String mergeParentSha = null;
-                if(!parents.isEmpty()) {
-                    mergeParentSha = parents.get(0).asString();
-                    System.out.println("-> Parent SHA (Base/Left): " + mergeParentSha);
-                }
-
-                System.out.println(" -> MergeCommitSha: " + prMergeCommit);
-
-                // fail here if merge parent commit is null <--- This shouldn't happen
-                assert mergeParentSha != null;
-
-                // Now we construct the left, right and base parent commits
-                // since we are using cherry pick, base commit will the parent of the remote commit you want to cherry-pick
-                String gitHeadCommit =  commit.getId().asString();
-
-
-                String rightCommit = prMergeCommit;
-                String leftCommit = gitHeadCommit;
-                String baseCommit  = mergeParentSha;
-
-                String[] data = {rightCommit, leftCommit, baseCommit, prMergeAuthor, prMergeAuthorEmail, String.valueOf(prTimeStamp)};
-
-//                evaluateMergeScenario(values, repo, proj);
-                // One failing PR must not abort the remaining PRs (a server
-                // run once died on PR 1/5 and left the DB empty). Classify the
-                // failure, leave the patch not-done, and continue.
+                // One failing PR must not abort the remaining PRs (a server run
+                // once died on PR 1/5 and left the DB empty; later a full run
+                // died at PR 17374, whose merge commit is unreachable on
+                // apache/kafka — a deleted feature branch — and the resulting
+                // "bad object" error aborted every remaining PR and project).
+                // Classify the failure, leave the patch not-done, and continue.
+                // The try MUST cover the GitHub/merge-commit resolution below,
+                // NOT just evaluateMergeScenario — that resolution (getMergeCommitSha,
+                // getCommitDetails) is exactly where the bad-object / rate-limit
+                // failures are thrown.
                 long scenarioStart = System.currentTimeMillis();
                 // Stamp every line emitted while this PR's scenario runs on
                 // this thread (doMerge, the invert/replay tree, GitUtils) with
@@ -257,6 +247,39 @@ public class RePatchIntegration {
                 LoggingService prLog = LoggingService.forOperation(this.project.getName(), "PR-" + values[2]);
                 LoggingService.setOperationContext("PR-" + values[2]);
                 try {
+                    // Get the merge commit of the PR (values[0] = mainline URL,
+                    // values[2] = merged PR number).
+                    GHPullRequest mergedPullRequest = new GitHubUtils().getMergeCommitSha(values[0], Integer.valueOf(values[2]));
+                    String prMergeCommit = mergedPullRequest.getMergeCommitSha();
+                    String prMergeAuthor = mergedPullRequest.getMergedBy().getName();
+                    String prMergeAuthorEmail = mergedPullRequest.getMergedBy().getEmail();
+                    long prTimeStamp = mergedPullRequest.getMergedAt().getTime();
+
+                    // get the parent of the merge commit
+                    VcsFullCommitDetails mergeParents = getCommitDetails(repo, prMergeCommit);
+                    List<Hash> parents = mergeParents.getParents();
+                    String mergeParentSha = null;
+                    if(!parents.isEmpty()) {
+                        mergeParentSha = parents.get(0).asString();
+                        System.out.println("-> Parent SHA (Base/Left): " + mergeParentSha);
+                    }
+
+                    System.out.println(" -> MergeCommitSha: " + prMergeCommit);
+
+                    // fail here if merge parent commit is null <--- This shouldn't happen
+                    assert mergeParentSha != null;
+
+                    // Now we construct the left, right and base parent commits
+                    // since we are using cherry pick, base commit will the parent of the remote commit you want to cherry-pick
+                    String gitHeadCommit =  commit.getId().asString();
+
+
+                    String rightCommit = prMergeCommit;
+                    String leftCommit = gitHeadCommit;
+                    String baseCommit  = mergeParentSha;
+
+                    String[] data = {rightCommit, leftCommit, baseCommit, prMergeAuthor, prMergeAuthorEmail, String.valueOf(prTimeStamp)};
+
                     PipelineRunResult.ScenarioOutcome outcome = evaluateMergeScenario(data, repo, proj, patch);
                     patch.setDone();
                     patch.saveIt();
@@ -657,10 +680,21 @@ public class RePatchIntegration {
     private void cloneProject(File cloneDir, String url, String branch, String pinnedSha) {
         System.out.println("TASK: cloning project -> " + url + " into " + cloneDir);
         try (Git git = Git.cloneRepository().setURI(url).setDirectory(cloneDir).call()) {
-            git.checkout().setName(pinnedSha).call();
-            git.branchCreate().setName(branch).setStartPoint(pinnedSha).setForce(true).call();
-            git.checkout().setName(branch).call();
-            System.out.println("TASK: pinned " + branch + " at " + pinnedSha);
+            if (pinnedSha != null && !pinnedSha.isEmpty()) {
+                git.checkout().setName(pinnedSha).call();
+                git.branchCreate().setName(branch).setStartPoint(pinnedSha).setForce(true).call();
+                git.checkout().setName(branch).call();
+                System.out.println("TASK: pinned " + branch + " at " + pinnedSha);
+            } else {
+                // No pinned SHA (2-column dataset entry): stay on the fork's
+                // default-branch HEAD and label a local branch there. The base
+                // is the clone-time HEAD, not a fixed commit — reproducibility
+                // across runs depends on the upstream fork not advancing.
+                String head = git.getRepository().resolve("HEAD").getName();
+                git.branchCreate().setName(branch).setForce(true).call();
+                git.checkout().setName(branch).call();
+                System.out.println("TASK: unpinned — using default HEAD " + head + " as base for " + branch);
+            }
         }
         catch(Exception e) {
             deleteRecursively(cloneDir);
@@ -688,6 +722,19 @@ public class RePatchIntegration {
      * e.g. linkedin-kafka — so forks can't be confused with their mainline
      * (see RepoNaming). Returns the directory name.
      */
+    /**
+     * Close the project opened by the previous loop iteration, if any, so the
+     * next {@link #openProject} doesn't trip openOrImport's headless-unsafe
+     * "where would you like to open the project" prompt (shown only when a
+     * project is already open). No-op on the first iteration.
+     */
+    private void closeOpenProject() {
+        if (this.project != null) {
+            platform.closeProject(this.project);
+            this.project = null;
+        }
+    }
+
     private String openProject(String path, String url, String remoteOriginUrl, String branch, String pinnedSha) {
         String dirName = RepoNaming.directoryName(url);
 
