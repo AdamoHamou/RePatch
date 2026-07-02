@@ -79,10 +79,34 @@ public class RePatchIntegration {
                 GitRepositoryManager repoManager = GitRepositoryManager.getInstance(project);
                 List<GitRepository> repos = repoManager.getRepositories();
                 if (repos.size() == 0) {
-                    VirtualFile virtualFile = LocalFileSystem.getInstance().findFileByPath(path + "/" + projectName + "/.git");
-                    GitRepositoryManager.getInstance(project).updateRepository(virtualFile);
-                    assert virtualFile != null;
-                    repo = repoManager.getRepositoryForFile(virtualFile);
+                    // Git-root detection is asynchronous and this pipeline occupies the EDT,
+                    // so on a cold VFS (Windows) the registration can never complete behind a
+                    // plain read. Force the .git dir into the VFS, schedule detection, and
+                    // pump the event queue until the repository shows up.
+                    VirtualFile virtualFile = LocalFileSystem.getInstance()
+                            .refreshAndFindFileByPath((path + "/" + projectName + "/.git").replace('\\', '/'));
+                    if (virtualFile != null) {
+                        GitRepositoryManager.getInstance(project).updateRepository(virtualFile);
+                    }
+                    repo = null;
+                    long deadline = System.currentTimeMillis() + 60000;
+                    while (repo == null && System.currentTimeMillis() < deadline) {
+                        com.intellij.ide.IdeEventQueue.getInstance().flushQueue();
+                        repos = repoManager.getRepositories();
+                        if (!repos.isEmpty()) {
+                            repo = repos.get(0);
+                            break;
+                        }
+                        if (virtualFile != null) {
+                            repo = repoManager.getRepositoryForFile(virtualFile);
+                        }
+                        try {
+                            Thread.sleep(100);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    }
                 } else {
                     repo = repos.get(0);
                 }
