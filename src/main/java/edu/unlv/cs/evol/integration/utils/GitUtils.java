@@ -1,5 +1,6 @@
 package edu.unlv.cs.evol.integration.utils;
 
+import edu.unlv.cs.evol.repatch.platform.EdtSafe;
 import edu.unlv.cs.evol.repatch.utils.Utils;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vcs.VcsException;
@@ -66,7 +67,13 @@ public class GitUtils {
 
     public void reset() {
         Utils.runSystemCommand("git", "clean");
-        Git.getInstance().reset(repo, GitResetMode.HARD, "HEAD");
+        try {
+            // Off-EDT via EdtSafe: git4idea's Windows auth-prep path asserts
+            // a background thread (see EdtSafe javadoc).
+            EdtSafe.compute(() -> Git.getInstance().reset(repo, GitResetMode.HARD, "HEAD"));
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
 //    public boolean cherrypick(String commitToCherryPick, String newBranchName) throws VcsException {

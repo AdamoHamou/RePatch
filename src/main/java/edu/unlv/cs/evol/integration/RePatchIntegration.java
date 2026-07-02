@@ -10,6 +10,7 @@ import edu.unlv.cs.evol.integration.utils.RepoNaming;
 import edu.unlv.cs.evol.integration.utils.Utils;
 import edu.unlv.cs.evol.repatch.utils.FailureEventSink;
 import edu.unlv.cs.evol.repatch.utils.LoggingService;
+import edu.unlv.cs.evol.repatch.platform.EdtSafe;
 import edu.unlv.cs.evol.repatch.platform.IntelliJ2024PlatformFacade;
 import edu.unlv.cs.evol.repatch.platform.PlatformFacade;
 import edu.unlv.cs.evol.repatch.platform.ProjectRootsService;
@@ -316,8 +317,11 @@ public class RePatchIntegration {
      */
     public VcsFullCommitDetails getHeadCommit(GitRepository repo) {
         try {
-            // Use GitHistoryUtils to get log for HEAD with only 1 entry
-            @NotNull List<GitCommit> commits = GitHistoryUtils.history(this.project, repo.getRoot(), "HEAD");
+            // Use GitHistoryUtils to get log for HEAD with only 1 entry.
+            // Off-EDT via EdtSafe: git4idea's Windows auth-prep path asserts
+            // a background thread (see EdtSafe javadoc).
+            @NotNull List<GitCommit> commits = EdtSafe.compute(
+                    () -> GitHistoryUtils.history(this.project, repo.getRoot(), "HEAD"));
             if (!commits.isEmpty()) {
                 return commits.get(0); // The latest commit at HEAD
             }
@@ -339,7 +343,8 @@ public class RePatchIntegration {
      * @throws Exception if no commit with the given SHA is found
      */
     public VcsFullCommitDetails getCommitDetails(GitRepository repo, String commitSha) throws Exception {
-        @NotNull List<GitCommit> commits = GitHistoryUtils.history(this.project, repo.getRoot(), commitSha);
+        @NotNull List<GitCommit> commits = EdtSafe.compute(
+                () -> GitHistoryUtils.history(this.project, repo.getRoot(), commitSha));
         if (!commits.isEmpty()) {
             return commits.get(0);
         } else {
