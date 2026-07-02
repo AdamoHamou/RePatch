@@ -28,6 +28,10 @@ public class Utils {
     public static void runSystemCommand(String... commands) {
         try {
             ProcessBuilder pb = new ProcessBuilder(commands);
+            // Backport of 87bd81c: drain the child's stdout/stderr via the
+            // parent's streams so the ~64KB pipe buffer can't fill and wedge
+            // the child in waitFor(), pinning the EDT at saveContent.
+            pb.inheritIO();
             Process p = pb.start();
             p.waitFor();
 
