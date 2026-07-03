@@ -284,3 +284,4 @@ cython_debug/
 ## IntelliJ Platform Gradle Plugin 2.x
 ##############################
 .intellijPlatform/
+src/main/resources/github-oauth.properties
