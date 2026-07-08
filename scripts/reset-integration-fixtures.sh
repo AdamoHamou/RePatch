@@ -16,11 +16,11 @@
 # clones it on first run.
 set -euo pipefail
 
-DB_NAME="refactoring_aware_integration_repatch"
+DB_NAME="repatch2_basematch_20260706"
 DB_USER="${RPATCH_DB_USER:-repatch}"
 DB_PASS="${RPATCH_DB_PASS:-repatch}"
 DB_HOST="${RPATCH_DB_HOST:-127.0.0.1}"
-DATA_DIR="${HOME}/repatch-integration-projects"
+DATA_DIR="${HOME}/repatch-basematch"
 
 # PROJECT_ROOT is exported by the Gradle task; fall back to script-relative
 # resolution so direct invocation also finds the sandbox.
@@ -38,7 +38,9 @@ SANDBOX_LOCK="${PROJECT_ROOT}/.intellijPlatform/sandbox/RePatch/IC-2024.3.7/conf
 
 echo "[reset-fixtures] dropping database ${DB_NAME}"
 MYSQL_PWD="${DB_PASS}" mysql -h "${DB_HOST}" -u "${DB_USER}" \
-    -e "DROP DATABASE IF EXISTS ${DB_NAME};"
+    -e "DROP DATABASE IF EXISTS ${DB_NAME}; CREATE DATABASE ${DB_NAME};"
+MYSQL_PWD="${DB_PASS}" mysql -h "${DB_HOST}" -u "${DB_USER}" "${DB_NAME}" < "${PROJECT_ROOT}/scripts/basematch-schema.sql"
+echo "[reset-fixtures] ${DB_NAME} recreated + schema seeded"
 
 if [ ! -f "${PROJECTS_FILE}" ]; then
     echo "[reset-fixtures] FATAL: projects file not found: ${PROJECTS_FILE}" >&2
@@ -81,8 +83,8 @@ while IFS=, read -r mainline_url variant_url branch pinned_sha || [ -n "${mainli
     rm -rf "${checkout_dir}/.idea"
 done < "${PROJECTS_FILE}"
 
-echo "[reset-fixtures] removing ~/results"
-rm -rf "${HOME}/results"
+echo "[reset-fixtures] (results untouched)"
+echo "[reset-fixtures] results dir left untouched (basematch isolation)"
 
 if [ -f "${SANDBOX_LOCK}" ]; then
     echo "[reset-fixtures] removing leftover sandbox lock"

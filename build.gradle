@@ -147,7 +147,15 @@ tasks.register('resetIntegrationFixtures', Exec) {
 
 tasks.named('runIde').configure {
     dependsOn 'resetIntegrationFixtures'
-    jvmArgs '-Djava.awt.headless=true', '-Xss100m', '-Xmx16g'
+    jvmArgs '-Djava.awt.headless=true', '-Xss100m', '-Xmx16g', '-Drepatch.timeout.scenarioBudgetMs=9999999999999'
+    // repro-mech experiment: forward the forced-abort mode to the pipeline JVM.
+    if (project.hasProperty('forceAbort')) {
+        jvmArgs "-Drepatch.forceAbort=${project.findProperty('forceAbort')}"
+    }
+    // base-compat: restrict resolution + verdict counting to 1.x semantics.
+    if (project.hasProperty('baseCompat1x')) {
+        jvmArgs "-Drepatch.baseCompat1x=${project.findProperty('baseCompat1x')}"
+    }
     if (project.hasProperty("mode")) {
         Object x = project.findProperty("mode")
         Object y = project.findProperty("dataPath")

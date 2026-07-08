@@ -204,6 +204,13 @@ public class EvaluationUtils {
      * step was removed). Comment-only conflicts carry no semantic merge risk.
      */
     private static boolean skipForTool(boolean isComment, String mergeTool) {
+        // BASE-COMPAT (-Drepatch.baseCompat1x=true): the 1.x baseline counted
+        // comment-only conflict blocks for every tool (its removeAllComments
+        // was never invoked); drop the RePatch-only comment filter so verdict
+        // arithmetic matches the baseline run's.
+        if (Boolean.getBoolean("repatch.baseCompat1x")) {
+            return false;
+        }
         return isComment && "RePatch".equals(mergeTool);
     }
 

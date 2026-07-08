@@ -22,6 +22,34 @@ import edu.unlv.cs.evol.repatch.utils.FailureEventSink;
  */
 public final class RefactoringExecutionService {
 
+    /**
+     * REPLICATION TOGGLE — bug-for-bug parity with the UNFIXED 1.x engine.
+     *
+     * The unfixed 1.x dispatchers wrapped every invert/replay op in
+     * {@code catch (Exception)}, which does NOT catch {@link Error}. When an
+     * IntelliJ move/rename-class processor threw an {@link AssertionError}
+     * (an Error, not an Exception), it escaped 1.x's guard and propagated out
+     * of {@code doMerge} — ABORTING the whole scenario. The integration
+     * harness catches that Error in {@code runRefMerge}
+     * ({@code catch (AssertionError | OutOfMemoryError | ...)}), leaves the
+     * returned conflict list empty, and derives the verdict from the RESIDUAL
+     * working tree (Utils.saveContent -> extractMergeConflicts). Because the
+     * abort happens mid-invert, before the cherry-pick that would introduce
+     * conflict markers, that residual tree is frequently marker-free -> the
+     * vacuous 0/0/0 "wins".
+     *
+     * The 2.0 migration replaced that with guard-and-continue: it catches
+     * {@code Throwable} here, classifies the AssertionError as PROCESSOR_THREW,
+     * skips just that op, and continues to a "corrected" real conflict count.
+     * That is why 2.0 reports conflicts where 1.x reported 0/0/0.
+     *
+     * When this flag is true we re-throw {@link Error} instead of swallowing
+     * it, restoring 1.x's abort disposition so 2.0 REPRODUCES 1.x's verdicts
+     * rather than correcting them. Set false to get 2.0's normal
+     * guard-and-continue behavior back.
+     */
+    private static final boolean REPLICATE_1X_ABORT_ON_ERROR = true;
+
     private final RefactoringExecutionContext context;
 
     public RefactoringExecutionService(RefactoringExecutionContext context) {
@@ -49,6 +77,36 @@ public final class RefactoringExecutionService {
     private RefactoringExecutionResult doExecute(RefactoringOperation operation) {
         String description = operation.describe();
 
+        // EXPERIMENT (repro-mech, 2026-07-04): force component-1 abort to
+        // replicate 1.x's "AssertionError-during-invert" mechanism. In 1.x a
+        // move/rename-class processor threw an AssertionError (an Error, not an
+        // Exception) that escaped doMerge's per-op catch and aborted the whole
+        // merge BEFORE cherryPick (RePatch.doMerge line ~205). Because no
+        // cherry-pick ran, the working tree was left at the plain checked-out
+        // variant commit with NO conflict markers; the harness then SAVES that
+        // residual tree and computes the verdict by SCANNING it for markers
+        // (RePatchIntegration.extractMergeConflicts), so a marker-free tree
+        // reads as 0/0/0. 2.0's 2024.3 processors NEVER throw that Error (they
+        // reclassify as typed guard Exceptions -> 0 PROCESSOR_THREW), so the
+        // abort never fires naturally. Here we inject it, only DURING INVERT
+        // (so the abort is always before cherry-pick, keeping the tree clean
+        // through 2.0's OWN pipeline -- no artificial git reset).
+        // Modes (-Drepatch.forceAbort=): "shape" throws on the first
+        // class-level move/rename op (1.x's exact AssertionError shape);
+        // "first" throws on the very first invert op (unconditional).
+        String forceAbort = System.getProperty("repatch.forceAbort", "");
+        if (!forceAbort.isEmpty() && description.startsWith("invert")) {
+            boolean isClassOp = description.contains("RENAME_CLASS")
+                    || description.contains("MOVE_CLASS")
+                    || description.contains("MOVE_RENAME_CLASS");
+            if (forceAbort.equals("first") || (forceAbort.equals("shape") && isClassOp)) {
+                System.out.println("[FORCE-ABORT:" + forceAbort + "] aborting merge before cherry-pick at: "
+                        + description);
+                throw new AssertionError("[FORCE-ABORT:" + forceAbort + "] simulated 1.x move/rename-class "
+                        + "processor AssertionError to abort the merge before cherry-pick: " + description);
+            }
+        }
+
         // Step 1 (shared half): project liveness + index readiness.
         if (context.getProject().isDisposed()) {
             return RefactoringExecutionResult.preconditionFailed(description, "project is disposed");
@@ -63,6 +121,12 @@ public final class RefactoringExecutionService {
         } catch (RefactoringOperation.UnsupportedShape e) {
             return RefactoringExecutionResult.unsupportedShape(description, e.getMessage());
         } catch (Throwable t) {
+            // Replicate 1.x: let Error (e.g. AssertionError from a platform
+            // processor) propagate out to abort the scenario; only classify
+            // genuine Exceptions as guarded failures.
+            if (REPLICATE_1X_ABORT_ON_ERROR && t instanceof Error) {
+                throw (Error) t;
+            }
             return RefactoringExecutionResult.processorThrew(description, t);
         }
 
@@ -70,6 +134,12 @@ public final class RefactoringExecutionService {
         try {
             operation.execute(context);
         } catch (Throwable t) {
+            // Replicate 1.x: let Error (e.g. AssertionError from a platform
+            // processor) propagate out to abort the scenario; only classify
+            // genuine Exceptions as guarded failures.
+            if (REPLICATE_1X_ABORT_ON_ERROR && t instanceof Error) {
+                throw (Error) t;
+            }
             return RefactoringExecutionResult.processorThrew(description, t);
         }
 

@@ -44,6 +44,24 @@ public final class PsiSearchService {
 
     private final PlatformFacade platform;
 
+    /**
+     * BASE-COMPAT (1.x-fidelity) resolution mode, -Drepatch.baseCompat1x=true.
+     *
+     * Restricts class resolution to exactly the strategies the 1.x engine
+     * (d90cb27, IntelliJ 2020.1.2) had: JavaPsiFacade.findClass(allScope)
+     * followed by the FilenameIndex walk (byte-equivalent port of 1.x
+     * Utils.getPsiClassByFilePath). The 2.0-only additions are disabled:
+     *   - the index-independent VFS-path resolution in findClass and
+     *     findClassByFilePath (added for 2024's silently-stale indexes);
+     *   - findClassByFileNameMatch (file-identity last resort for member ops
+     *     on classes renamed in the same PR — 1.x had no such fallback and
+     *     silently failed those ops).
+     * Purpose: reproduce 1.x's op-failure profile so the merged tree
+     * matches the baseline run's honest (git-fallback) verdicts instead of
+     * 2.0's superset op execution improving/altering them.
+     */
+    private static final boolean BASE_COMPAT_1X = Boolean.getBoolean("repatch.baseCompat1x");
+
     public PsiSearchService(PlatformFacade platform) {
         this.platform = platform;
     }
@@ -65,7 +83,7 @@ public final class PsiSearchService {
             // and even FilenameIndex miss files that are on disk. We know the
             // exact relative path, so resolve through the VFS directly —
             // no index involved.
-            if (psiClass == null) {
+            if (psiClass == null && !BASE_COMPAT_1X) {
                 psiClass = findClassByVfsPathInReadAction(project, filePath, className);
             }
             boolean viaVfs = !viaFacade && psiClass != null;
@@ -121,6 +139,11 @@ public final class PsiSearchService {
      * when no name matches (a file with exactly one top-level class).
      */
     public PsiClass findClassByFileNameMatch(Project project, String filePath) {
+        if (BASE_COMPAT_1X) {
+            // 1.x had no file-identity fallback: member ops on classes renamed
+            // in the same PR silently failed to resolve. Reproduce that.
+            return null;
+        }
         return platform.runInSmartReadAction(project, () -> {
             String basePath = project.getBasePath();
             if (basePath == null || filePath == null) {
@@ -164,7 +187,10 @@ public final class PsiSearchService {
     public PsiClass findClassByFilePath(Project project, String filePath, String qualifiedClass) {
         return platform.runInSmartReadAction(project, () -> {
             // Index-independent direct path resolution first; see findClass.
-            PsiClass psiClass = findClassByVfsPathInReadAction(project, filePath, qualifiedClass);
+            // BASE-COMPAT: 1.x's getPsiClassByFilePath was the index walk
+            // only; skip the VFS strategy to reproduce its failure profile.
+            PsiClass psiClass = BASE_COMPAT_1X ? null
+                    : findClassByVfsPathInReadAction(project, filePath, qualifiedClass);
             if (psiClass == null) {
                 psiClass = findClassByFilePathInReadAction(project, filePath, qualifiedClass);
             }

@@ -173,7 +173,44 @@ public class RePatch extends AnAction {
         vfs.commitAndReparse(project);
         RefactoringExecutionContext executionContext = new RefactoringExecutionContext(project, platform);
         System.out.println("Inverting right refactorings");
-        int failedRefactorings = InvertRefactorings.invertRefactorings(rightRefs, executionContext);
+        // BASE-COMPAT (-Drepatch.baseCompat1x=true): reproduce the 1.x
+        // engine's op-family failure profile on the right-invert pass. The
+        // 1.x processors demonstrably CRASHED or silently no-op'd on the
+        // extract/inline/member-move families (ReplayExtractMethod
+        // ChangeSignature NPE, "Invalid range" IllegalArgumentException,
+        // MoveMembersProcessor assertion / static-only no-op — all verified
+        // in local 1.x reproductions on 2020.1.2), while its rename-family
+        // inverts executed reliably (the baseline's genuine dual-engine wins
+        // 13141/13884/13888 are rename-family right windows). 2.0's migrated
+        // processors execute the crash-prone families successfully, mutating
+        // the right tree where 1.x never could. Filter exactly those families
+        // out of the invert pass; detection, conflict matrix and replay see
+        // the full list, and renames execute as they did in 1.x.
+        int failedRefactorings = 0;
+        if (Boolean.getBoolean("repatch.baseCompat1x")) {
+            java.util.Set<org.refactoringminer.api.RefactoringType> skip1x = java.util.EnumSet.of(
+                    org.refactoringminer.api.RefactoringType.EXTRACT_OPERATION,
+                    org.refactoringminer.api.RefactoringType.EXTRACT_AND_MOVE_OPERATION,
+                    org.refactoringminer.api.RefactoringType.INLINE_OPERATION,
+                    org.refactoringminer.api.RefactoringType.MOVE_AND_INLINE_OPERATION,
+                    org.refactoringminer.api.RefactoringType.INLINE_VARIABLE,
+                    org.refactoringminer.api.RefactoringType.MOVE_OPERATION,
+                    org.refactoringminer.api.RefactoringType.MOVE_AND_RENAME_OPERATION,
+                    org.refactoringminer.api.RefactoringType.MOVE_ATTRIBUTE,
+                    org.refactoringminer.api.RefactoringType.MOVE_RENAME_ATTRIBUTE);
+            ArrayList<RefactoringObject> invertible = new ArrayList<>();
+            for (RefactoringObject r : rightRefs) {
+                if (r.getRefactoringType() != null && skip1x.contains(r.getRefactoringType())) {
+                    continue;
+                }
+                invertible.add(r);
+            }
+            System.out.println("[BaseCompat1x] right-invert 1.x family filter: "
+                    + invertible.size() + "/" + rightRefs.size() + " refs pass");
+            failedRefactorings = InvertRefactorings.invertRefactorings(invertible, executionContext);
+        } else {
+            failedRefactorings = InvertRefactorings.invertRefactorings(rightRefs, executionContext);
+        }
         vfs.commitAndReparse(project);
         String rightUndoCommit = gitUtils.addAndCommit();
         // No commit hash means the inverted right side could not be committed
