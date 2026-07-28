@@ -40,6 +40,7 @@ import java.io.*;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 public class RePatchIntegration {
     private com.intellij.openapi.project.Project project;
@@ -314,6 +315,12 @@ public class RePatchIntegration {
         patch.setIsConflicting();
         patch.saveIt();
 
+        // Capture which files git could not auto-merge while the conflicted
+        // index still exists (the reset below wipes it). Refactoring detection
+        // is scoped to exactly these files.
+        Set<String> conflictingFiles = gitUtils.getConflictingFilePaths();
+        System.out.println("-> Conflicting files (" + conflictingFiles.size() + "): " + conflictingFiles);
+
         // Add merge commit to database
         if (mergeCommit == null) {
             mergeCommit = new MergeCommit(mergeCommitHash, isConflicting, leftParent,
@@ -347,7 +354,7 @@ public class RePatchIntegration {
 
         // Run RePatch
         Pair<ArrayList<Pair<RefactoringObject, RefactoringObject>>, Long> refMergeConflictsAndRuntime =
-                runRefMerge(project, repo, rightParent, leftParent, baseCommit, mergeCommit);
+                runRefMerge(project, repo, rightParent, leftParent, baseCommit, mergeCommit, conflictingFiles);
 
         EvaluationUtils.removeUnmergedAndNonJavaFiles(project.getBasePath());
         Utils.saveContent(project, refMergePath);
@@ -515,14 +522,15 @@ public class RePatchIntegration {
                                                                                           String rightParent,
                                                                                           String leftParent,
                                                                                           String baseParent,
-                                                                                          MergeCommit mergeCommit) {
+                                                                                          MergeCommit mergeCommit,
+                                                                                          Set<String> conflictingFiles) {
         ArrayList<Pair<RefactoringObject, RefactoringObject>> conflicts = new ArrayList<>();
         List<org.refactoringminer.api.Refactoring> refactorings = new ArrayList<>();
         RePatch refMerging = new RePatch();
         System.out.println("-> Starting RePatch");
         long time = System.currentTimeMillis();
         try {
-            conflicts = refMerging.refMerge(rightParent, leftParent, baseParent, project, repo, refactorings);
+            conflicts = refMerging.refMerge(rightParent, leftParent, baseParent, project, repo, refactorings, conflictingFiles);
         }
         catch(AssertionError | OutOfMemoryError | LargeObjectException.OutOfMemory e) {
             if(!refactorings.isEmpty()) {

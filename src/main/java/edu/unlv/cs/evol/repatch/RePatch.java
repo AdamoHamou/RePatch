@@ -25,8 +25,10 @@ import edu.unlv.cs.evol.repatch.utils.GitUtils;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -55,7 +57,7 @@ public class RePatch extends AnAction {
         String baseCommit = System.getenv("BASE_COMMIT");
 
         List<Refactoring> detectedRefactorings = new ArrayList<>();
-        refMerge(rightCommit, leftCommit, baseCommit, project, repo, detectedRefactorings);
+        refMerge(rightCommit, leftCommit, baseCommit, project, repo, detectedRefactorings, new HashSet<>());
 
     }
 
@@ -64,7 +66,8 @@ public class RePatch extends AnAction {
      */
     public ArrayList<Pair<RefactoringObject, RefactoringObject>> refMerge(String rightCommit, String leftCommit, String baseCommit,
                                                                           Project project, GitRepository repo,
-                                                                          List<Refactoring> detectedRefactorings) {
+                                                                          List<Refactoring> detectedRefactorings,
+                                                                          Set<String> conflictingFiles) {
         this.project = project;
         File dir = new File(Objects.requireNonNull(project.getBasePath()));
         try {
@@ -73,7 +76,7 @@ public class RePatch extends AnAction {
             ioException.printStackTrace();
         }
 
-        return doMerge(rightCommit, leftCommit, baseCommit, repo, detectedRefactorings);
+        return doMerge(rightCommit, leftCommit, baseCommit, repo, detectedRefactorings, conflictingFiles);
 
     }
 
@@ -90,17 +93,24 @@ public class RePatch extends AnAction {
      */
     private ArrayList<Pair<RefactoringObject, RefactoringObject>> doMerge(String rightCommit, String leftCommit, String baseCommit,
                                                                           GitRepository repo,
-                                                                          List<Refactoring> detectedRefactorings){
+                                                                          List<Refactoring> detectedRefactorings,
+                                                                          Set<String> conflictingFiles){
         long time = System.currentTimeMillis();
         GitUtils gitUtils = new GitUtils(repo, project);
         //String baseCommit = gitUtils.getBaseCommit(leftCommit, rightCommit); // we pass this directly in the method
         System.out.println("Detecting refactorings");
+        // Which sides get scoped to the conflicting files: both | left | right | off.
+        // Toggle exists so the effect of scoping each side can be measured
+        // independently without a code change.
+        String scopeMode = System.getProperty("repatch.scopeDetection", "both");
+        Set<String> rightScope = ("both".equals(scopeMode) || "right".equals(scopeMode)) ? conflictingFiles : null;
+        Set<String> leftScope = ("both".equals(scopeMode) || "left".equals(scopeMode)) ? conflictingFiles : null;
         ExecutorService executor = Executors.newSingleThreadExecutor();
         AtomicReference<ArrayList<RefactoringObject>> rightRefsAtomic = new AtomicReference<>(new ArrayList<>());
         AtomicReference<ArrayList<RefactoringObject>> leftRefsAtomic = new AtomicReference<>(new ArrayList<>());
         Future futureRefMiner = executor.submit(() -> {
-            rightRefsAtomic.set(detectAndSimplifyRefactorings(rightCommit, baseCommit, detectedRefactorings));
-            leftRefsAtomic.set(detectAndSimplifyRefactorings(leftCommit, baseCommit, detectedRefactorings));
+            rightRefsAtomic.set(detectAndSimplifyRefactorings(rightCommit, baseCommit, detectedRefactorings, rightScope));
+            leftRefsAtomic.set(detectAndSimplifyRefactorings(leftCommit, baseCommit, detectedRefactorings, leftScope));
         });
         try {
             futureRefMiner.get(11, TimeUnit.MINUTES);
@@ -196,7 +206,8 @@ public class RePatch extends AnAction {
      * detected refactoring against previously detected refactorings to check for transitivity or if the refactorings can
      * be simplified.
      */
-    public ArrayList<RefactoringObject> detectAndSimplifyRefactorings(String commit, String base, List<Refactoring> detectedRefactorings) {
+    public ArrayList<RefactoringObject> detectAndSimplifyRefactorings(String commit, String base, List<Refactoring> detectedRefactorings,
+                                                                      Set<String> conflictingFiles) {
         ArrayList<RefactoringObject> simplifiedRefactorings = new ArrayList<>();
         Matrix matrix = new Matrix(project);
         GitHistoryRefactoringMiner miner = new GitHistoryRefactoringMinerImpl();
@@ -222,7 +233,34 @@ public class RePatch extends AnAction {
         } catch (Exception e) {
             e.printStackTrace();
         }
-        return simplifiedRefactorings;
+        return filterToConflictingFiles(commit, simplifiedRefactorings, conflictingFiles);
+    }
+
+    /*
+     * Keep only the refactorings that touch a file git failed to auto-merge.
+     * Runs after matrix simplification so transitivity still sees the full
+     * detected set; only the invert/replay list is narrowed. A null or empty
+     * set means scoping is unavailable — fail open and keep everything.
+     * Refactorings without a file path (e.g. Rename Package) are kept: they
+     * are inherently cross-file.
+     */
+    private ArrayList<RefactoringObject> filterToConflictingFiles(String commit, ArrayList<RefactoringObject> refactorings,
+                                                                  Set<String> conflictingFiles) {
+        if (conflictingFiles == null || conflictingFiles.isEmpty()) {
+            return refactorings;
+        }
+        ArrayList<RefactoringObject> scoped = new ArrayList<>();
+        for (RefactoringObject refactoring : refactorings) {
+            if (refactoring.getOriginalFilePath() == null && refactoring.getDestinationFilePath() == null) {
+                scoped.add(refactoring);
+            } else if (conflictingFiles.contains(refactoring.getOriginalFilePath())
+                    || conflictingFiles.contains(refactoring.getDestinationFilePath())) {
+                scoped.add(refactoring);
+            }
+        }
+        System.out.println("-> Scoped detection for " + commit + " to conflicting files: kept "
+                + scoped.size() + "/" + refactorings.size());
+        return scoped;
     }
 
 }

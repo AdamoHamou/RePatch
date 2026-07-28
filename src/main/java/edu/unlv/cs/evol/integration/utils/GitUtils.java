@@ -24,7 +24,6 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -85,6 +84,37 @@ public class GitUtils {
             System.out.println("WARNING: working tree still dirty after reset ("
                     + leftover.size() + " entries): " + leftover);
         }
+    }
+
+    /*
+     * Paths git could not auto-merge in the current conflicted working tree
+     * (content, modify/delete and rename conflicts alike), repo-root relative —
+     * the same form RefactoringMiner reports in LocationInfo. Must be called
+     * while the conflicted index still exists, i.e. before reset().
+     */
+    public Set<String> getConflictingFilePaths() {
+        AtomicReference<GitCommandResult> gitCommandResult = new AtomicReference<>();
+        Thread thread = new Thread(() -> {
+            GitLineHandler lineHandler = new GitLineHandler(project, repo.getRoot(), GitCommand.DIFF);
+            lineHandler.addParameters("--name-only", "--diff-filter=U");
+            gitCommandResult.set(Git.getInstance().runCommand(lineHandler));
+        });
+        thread.start();
+        try {
+            thread.join();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        Set<String> paths = new LinkedHashSet<>();
+        if (gitCommandResult.get() != null) {
+            for (String line : gitCommandResult.get().getOutput()) {
+                String trimmed = line.trim();
+                if (!trimmed.isEmpty()) {
+                    paths.add(trimmed);
+                }
+            }
+        }
+        return paths;
     }
 
 //    public boolean cherrypick(String commitToCherryPick, String newBranchName) throws VcsException {
