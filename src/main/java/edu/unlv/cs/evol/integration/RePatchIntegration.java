@@ -429,10 +429,16 @@ public class RePatchIntegration {
                 }
             }
 
-            // Add refactoring conflict data to database
+            // Add refactoring conflict data to database. One bad row must not
+            // abort the whole patch.
             for (Pair<RefactoringObject, RefactoringObject> pair : refactoringConflicts) {
-                RefactoringConflict refactoringConflict = new RefactoringConflict(pair.getLeft(), pair.getRight(), refMergeResult);
-                refactoringConflict.saveIt();
+                try {
+                    RefactoringConflict refactoringConflict = new RefactoringConflict(pair.getLeft(), pair.getRight(), refMergeResult);
+                    refactoringConflict.saveIt();
+                } catch (Exception e) {
+                    System.out.println("Failed to persist refactoring conflict for patch "
+                            + patch.getNumber() + ": " + e.getMessage());
+                }
             }
         }
 

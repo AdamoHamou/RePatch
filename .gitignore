@@ -282,3 +282,4 @@ cython_debug/
 .cursorindexingignore
 
 .intellijPlatform/
+.prerun_*

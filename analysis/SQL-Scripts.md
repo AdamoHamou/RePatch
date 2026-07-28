@@ -92,3 +92,11 @@ SELECT refactoring_type, refactoring.project_id, refactoring.patch_id, project.f
 FROM refactoring_aware_integration.refactoring, patch, project
 WHERE refactoring.patch_id = patch.id AND refactoring.project_id = project.id
 ```
+This SQL query reports which refactoring type-pairs actually collide across divergent forks: for every persisted source↔target refactoring conflict it counts how often each ordered pair (target/left type vs. source/right type) occurs. This is the primary consumer of the `refactoring_conflict` table.
+
+```sql
+SELECT left_refactoring_type, right_refactoring_type, COUNT(*) AS occurrences
+FROM refactoring_aware_integration_repatch.refactoring_conflict
+GROUP BY left_refactoring_type, right_refactoring_type
+ORDER BY occurrences DESC;
+```
