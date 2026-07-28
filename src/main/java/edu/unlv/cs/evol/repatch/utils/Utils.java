@@ -79,6 +79,32 @@ public class Utils {
 
     }
 
+    /*
+     * Like runSystemCommand, but runs inside the given working directory and
+     * returns the process output. runSystemCommand inherits the IDE process's
+     * cwd, which is the gradle launch directory — git commands aimed at the
+     * evaluation clone must set the clone as cwd explicitly.
+     */
+    public static List<String> runSystemCommandInDir(File workingDir, String... commands) {
+        List<String> output = new ArrayList<>();
+        try {
+            ProcessBuilder pb = new ProcessBuilder(commands);
+            pb.directory(workingDir);
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.add(line);
+                }
+            }
+            p.waitFor();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return output;
+    }
+
     public static void log(String projectName, Object message) {
         String timeStamp = new SimpleDateFormat("MM/dd/yyyy HH:mm:ss z").format(new Date());
         String logMessage = timeStamp + " ";
