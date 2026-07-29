@@ -1,2 +1,13 @@
-rootProject.name = 'RePatch'
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
 
+plugins {
+    // Auto-provision JDK 17 via Foojay so we don't depend on JDK 17 being apt-installed.
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '0.8.0'
+}
+
+rootProject.name = 'RePatch'

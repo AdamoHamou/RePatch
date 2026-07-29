@@ -60,7 +60,7 @@ public class ReplayPushDownField {
         MemberInfo memberInfo = new MemberInfo(psiField);
         memberInfos.add(memberInfo);
         // Use as is policy for now
-        DocCommentPolicy<PsiComment> policy = new DocCommentPolicy<>(DocCommentPolicy.ASIS);
+        DocCommentPolicy policy = new DocCommentPolicy(DocCommentPolicy.ASIS);
         PushDownProcessor<MemberInfo, PsiMember, PsiClass> pushDownProcessor = new PushDownProcessor<>(superClass, memberInfos, policy);
 
 

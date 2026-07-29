@@ -300,6 +300,12 @@ class GitThread extends Thread {
     @Override
     public void run()
     {
+        // reset --hard and a forced checkout only restore tracked files;
+        // untracked files written by refactoring inversions at paths the
+        // target commit does not contain would survive the switch and later
+        // be swept up by git add -A.
+        Utils.runSystemCommandInDir(new File(repo.getRoot().getPath()),
+                "git", "clean", "-fd", "-e", ".idea", "-e", "*.iml");
         Git.getInstance().reset(repo, GitResetMode.HARD, "HEAD");
         Git.getInstance().checkout(repo, commit, null, true, false, false);
     }

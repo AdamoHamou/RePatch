@@ -14,9 +14,15 @@ public class RefactoringConflict extends Model {
                 "left_new_path", left.getDestinationFilePath(), "right_new_path", right.getDestinationFilePath(),
                 "left_refactoring_type", left.getRefactoringType().getDisplayName(),
                 "right_refactoring_type", right.getRefactoringType().getDisplayName(),
-                "left_refactoring_detail", left.getRefactoringDetail(), "right_refactoring_detail", right.getRefactoringDetail(),
+                "left_refactoring_detail", truncate(left.getRefactoringDetail()),
+                "right_refactoring_detail", truncate(right.getRefactoringDetail()),
                 "merge_result_id", mergeResult.getId(), "merge_commit_id", mergeResult.getMergeCommitId(),
                 "project_id", mergeResult.getProjectId(),
                 "patch_id", mergeResult.getPatchId());
+    }
+
+    // RefactoringMiner descriptions can exceed the column's VARCHAR(2000)
+    private static String truncate(String detail) {
+        return (detail != null && detail.length() > 2000) ? detail.substring(0, 2000) : detail;
     }
 }

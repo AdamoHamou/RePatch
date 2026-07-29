@@ -24,6 +24,9 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class GitUtils {
@@ -65,8 +68,53 @@ public class GitUtils {
 
 
     public void reset() {
-        Utils.runSystemCommand("git", "clean");
+        // "git clean" with no flags refuses to run (clean.requireForce) and
+        // runSystemCommand executes in the IDE's cwd rather than the clone, so
+        // the old call removed nothing: untracked files left behind by one
+        // scenario survived into the next and were swept into its undo commit
+        // by git add -A. Force-clean the clone itself. -x is deliberately
+        // omitted (git add -A never stages ignored files, and -x would delete
+        // build caches); the IDE project model is kept.
+        File root = new File(repo.getRoot().getPath());
+        Utils.runSystemCommandInDir(root, "git", "clean", "-fd", "-e", ".idea", "-e", "*.iml");
         Git.getInstance().reset(repo, GitResetMode.HARD, "HEAD");
+        List<String> leftover = Utils.runSystemCommandInDir(root, "git", "status", "--porcelain");
+        leftover.removeIf(line -> line.contains(".idea") || line.trim().endsWith(".iml"));
+        if (!leftover.isEmpty()) {
+            System.out.println("WARNING: working tree still dirty after reset ("
+                    + leftover.size() + " entries): " + leftover);
+        }
+    }
+
+    /*
+     * Paths git could not auto-merge in the current conflicted working tree
+     * (content, modify/delete and rename conflicts alike), repo-root relative —
+     * the same form RefactoringMiner reports in LocationInfo. Must be called
+     * while the conflicted index still exists, i.e. before reset().
+     */
+    public Set<String> getConflictingFilePaths() {
+        AtomicReference<GitCommandResult> gitCommandResult = new AtomicReference<>();
+        Thread thread = new Thread(() -> {
+            GitLineHandler lineHandler = new GitLineHandler(project, repo.getRoot(), GitCommand.DIFF);
+            lineHandler.addParameters("--name-only", "--diff-filter=U");
+            gitCommandResult.set(Git.getInstance().runCommand(lineHandler));
+        });
+        thread.start();
+        try {
+            thread.join();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        Set<String> paths = new LinkedHashSet<>();
+        if (gitCommandResult.get() != null) {
+            for (String line : gitCommandResult.get().getOutput()) {
+                String trimmed = line.trim();
+                if (!trimmed.isEmpty()) {
+                    paths.add(trimmed);
+                }
+            }
+        }
+        return paths;
     }
 
 //    public boolean cherrypick(String commitToCherryPick, String newBranchName) throws VcsException {
@@ -405,6 +453,11 @@ class GitThread extends Thread {
     @Override
     public void run()
     {
+        // reset --hard and a forced checkout only restore tracked files;
+        // untracked residue would survive the switch and later be swept up
+        // by git add -A.
+        Utils.runSystemCommandInDir(new File(repo.getRoot().getPath()),
+                "git", "clean", "-fd", "-e", ".idea", "-e", "*.iml");
         Git.getInstance().reset(repo, GitResetMode.HARD, "HEAD");
         Git.getInstance().checkout(repo, commit, null, true, false, false);
     }

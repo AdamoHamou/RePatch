@@ -8,7 +8,10 @@ import edu.unlv.cs.evol.integration.utils.EvaluationUtils;
 import edu.unlv.cs.evol.integration.utils.GitUtils;
 import edu.unlv.cs.evol.integration.utils.Utils;
 import com.intellij.ide.impl.ProjectUtil;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.project.DumbService;
+import com.intellij.openapi.vcs.ProjectLevelVcsManager;
+import com.intellij.openapi.vcs.VcsDirectoryMapping;
 import com.intellij.openapi.vcs.VcsException;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
@@ -37,6 +40,7 @@ import java.io.*;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 public class RePatchIntegration {
     private com.intellij.openapi.project.Project project;
@@ -79,10 +83,7 @@ public class RePatchIntegration {
                 GitRepositoryManager repoManager = GitRepositoryManager.getInstance(project);
                 List<GitRepository> repos = repoManager.getRepositories();
                 if (repos.size() == 0) {
-                    VirtualFile virtualFile = LocalFileSystem.getInstance().findFileByPath(path + "/" + projectName + "/.git");
-                    GitRepositoryManager.getInstance(project).updateRepository(virtualFile);
-                    assert virtualFile != null;
-                    repo = repoManager.getRepositoryForFile(virtualFile);
+                    repo = registerAndGetRepository(repoManager, path, projectName);
                 } else {
                     repo = repos.get(0);
                 }
@@ -93,7 +94,11 @@ public class RePatchIntegration {
                 System.out.println("Continuing " + projectName);
                 GitRepositoryManager repoManager = GitRepositoryManager.getInstance(project);
                 List<GitRepository> repos = repoManager.getRepositories();
-                repo = repos.get(0);
+                if (repos.isEmpty()) {
+                    repo = registerAndGetRepository(repoManager, path, projectName);
+                } else {
+                    repo = repos.get(0);
+                }
             }
             System.out.println("Repository for Integration -> " + repo);
             evaluateProject(repo, proj, projectName);
@@ -102,6 +107,38 @@ public class RePatchIntegration {
 
 
         }
+    }
+
+    /*
+     * IntelliJ 2024 dropped the implicit "discover repo from .git folder" behavior of
+     * GitRepositoryManager.updateRepository. We now explicitly register the project root
+     * as a Git VCS directory mapping, then look up the repo. The mapping APIs require
+     * write-intent (EDT) but updateRepository / getRepositoryForFile assert background
+     * thread, so we split the work between EDT and a pooled thread. The mapping change
+     * is processed asynchronously by GitRepositoryManager, so we poll for the repo to
+     * appear with a generous deadline.
+     */
+    private GitRepository registerAndGetRepository(GitRepositoryManager repoManager, String basePath, String projectName) throws Exception {
+        VirtualFile projectRoot = LocalFileSystem.getInstance().findFileByPath(basePath + "/" + projectName);
+        assert projectRoot != null;
+        ProjectLevelVcsManager vcsManager = ProjectLevelVcsManager.getInstance(project);
+        List<VcsDirectoryMapping> mappings = new ArrayList<>(vcsManager.getDirectoryMappings());
+        boolean alreadyMapped = mappings.stream().anyMatch(m -> "Git".equals(m.getVcs()));
+        if (!alreadyMapped) {
+            mappings.add(new VcsDirectoryMapping(projectRoot.getPath(), "Git"));
+            vcsManager.setDirectoryMappings(mappings);
+        }
+        return ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            long deadline = System.currentTimeMillis() + 60_000;
+            GitRepository repo = null;
+            while (System.currentTimeMillis() < deadline) {
+                repoManager.updateRepository(projectRoot);
+                repo = repoManager.getRepositoryForFile(projectRoot);
+                if (repo != null) break;
+                try { Thread.sleep(250); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+            }
+            return repo;
+        }).get();
     }
 
     /*
@@ -278,6 +315,12 @@ public class RePatchIntegration {
         patch.setIsConflicting();
         patch.saveIt();
 
+        // Capture which files git could not auto-merge while the conflicted
+        // index still exists (the reset below wipes it). Refactoring detection
+        // is scoped to exactly these files.
+        Set<String> conflictingFiles = gitUtils.getConflictingFilePaths();
+        System.out.println("-> Conflicting files (" + conflictingFiles.size() + "): " + conflictingFiles);
+
         // Add merge commit to database
         if (mergeCommit == null) {
             mergeCommit = new MergeCommit(mergeCommitHash, isConflicting, leftParent,
@@ -311,7 +354,7 @@ public class RePatchIntegration {
 
         // Run RePatch
         Pair<ArrayList<Pair<RefactoringObject, RefactoringObject>>, Long> refMergeConflictsAndRuntime =
-                runRefMerge(project, repo, rightParent, leftParent, baseCommit, mergeCommit);
+                runRefMerge(project, repo, rightParent, leftParent, baseCommit, mergeCommit, conflictingFiles);
 
         EvaluationUtils.removeUnmergedAndNonJavaFiles(project.getBasePath());
         Utils.saveContent(project, refMergePath);
@@ -386,10 +429,16 @@ public class RePatchIntegration {
                 }
             }
 
-            // Add refactoring conflict data to database
+            // Add refactoring conflict data to database. One bad row must not
+            // abort the whole patch.
             for (Pair<RefactoringObject, RefactoringObject> pair : refactoringConflicts) {
-                RefactoringConflict refactoringConflict = new RefactoringConflict(pair.getLeft(), pair.getRight(), refMergeResult);
-                refactoringConflict.saveIt();
+                try {
+                    RefactoringConflict refactoringConflict = new RefactoringConflict(pair.getLeft(), pair.getRight(), refMergeResult);
+                    refactoringConflict.saveIt();
+                } catch (Exception e) {
+                    System.out.println("Failed to persist refactoring conflict for patch "
+                            + patch.getNumber() + ": " + e.getMessage());
+                }
             }
         }
 
@@ -479,14 +528,15 @@ public class RePatchIntegration {
                                                                                           String rightParent,
                                                                                           String leftParent,
                                                                                           String baseParent,
-                                                                                          MergeCommit mergeCommit) {
+                                                                                          MergeCommit mergeCommit,
+                                                                                          Set<String> conflictingFiles) {
         ArrayList<Pair<RefactoringObject, RefactoringObject>> conflicts = new ArrayList<>();
         List<org.refactoringminer.api.Refactoring> refactorings = new ArrayList<>();
         RePatch refMerging = new RePatch();
         System.out.println("-> Starting RePatch");
         long time = System.currentTimeMillis();
         try {
-            conflicts = refMerging.refMerge(rightParent, leftParent, baseParent, project, repo, refactorings);
+            conflicts = refMerging.refMerge(rightParent, leftParent, baseParent, project, repo, refactorings, conflictingFiles);
         }
         catch(AssertionError | OutOfMemoryError | LargeObjectException.OutOfMemory e) {
             if(!refactorings.isEmpty()) {
