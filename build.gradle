@@ -95,6 +95,15 @@ intellijPlatform {
 }
 
 
+// Verifies a detected refactoring conflict persists to refactoring_conflict.
+// Needs JDBC_URL/JDBC_USER/JDBC_PASSWORD pointing at a schema-bootstrapped DB.
+tasks.register('refactoringConflictPersistenceCheck', JavaExec) {
+    group = 'verification'
+    description = 'Persist a constructed source<->target refactoring conflict and read it back'
+    mainClass = 'edu.unlv.cs.evol.integration.database.RefactoringConflictPersistenceCheck'
+    classpath = sourceSets.main.runtimeClasspath
+}
+
 tasks.named('runIde').configure {
     jvmArgs '-Djava.awt.headless=true', '-Xss100m', '-Xmx16g'
     if (project.hasProperty("mode")) {
