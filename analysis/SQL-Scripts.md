@@ -96,7 +96,7 @@ This SQL query reports which refactoring type-pairs actually collide across dive
 
 ```sql
 SELECT left_refactoring_type, right_refactoring_type, COUNT(*) AS occurrences
-FROM refactoring_aware_integration_repatch.refactoring_conflict
+FROM refactoring_aware_integration.refactoring_conflict
 GROUP BY left_refactoring_type, right_refactoring_type
 ORDER BY occurrences DESC;
 ```
