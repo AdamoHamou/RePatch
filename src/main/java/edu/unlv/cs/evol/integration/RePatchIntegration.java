@@ -34,6 +34,7 @@ import org.eclipse.jgit.transport.RemoteConfig;
 import org.eclipse.jgit.transport.URIish;
 import org.jetbrains.annotations.NotNull;
 import org.kohsuke.github.GHPullRequest;
+import org.kohsuke.github.GHUser;
 import org.refactoringminer.api.Refactoring;
 
 import java.io.*;
@@ -184,10 +185,23 @@ public class RePatchIntegration {
                 // values[2] = merged PR number
 
                 GHPullRequest mergedPullRequest = new GitHubUtils().getMergeCommitSha(values[0], Integer.valueOf(values[2]));
+                // Only the merge commit SHA is load-bearing (it is the commit we
+                // cherry-pick); an unmerged or missing PR has none, so skip the
+                // patch instead of NPEing and aborting the whole project run.
+                if (mergedPullRequest == null || !mergedPullRequest.isMerged()
+                        || mergedPullRequest.getMergeCommitSha() == null) {
+                    System.out.println("-> SKIP PR " + values[2] + ": not merged or no merge commit on GitHub");
+                    patch.setDone();
+                    patch.saveIt();
+                    continue;
+                }
                 String prMergeCommit = mergedPullRequest.getMergeCommitSha();
-                String prMergeAuthor = mergedPullRequest.getMergedBy().getName();
-                String prMergeAuthorEmail = mergedPullRequest.getMergedBy().getEmail();
-                long prTimeStamp = mergedPullRequest.getMergedAt().getTime();
+                // Author name/email/timestamp are nullable bookkeeping columns;
+                // GitHub does not guarantee them even for merged PRs.
+                GHUser mergedBy = mergedPullRequest.getMergedBy();
+                String prMergeAuthor = (mergedBy != null && mergedBy.getName() != null) ? mergedBy.getName() : "unknown";
+                String prMergeAuthorEmail = (mergedBy != null && mergedBy.getEmail() != null) ? mergedBy.getEmail() : "";
+                long prTimeStamp = mergedPullRequest.getMergedAt() != null ? mergedPullRequest.getMergedAt().getTime() : 0L;
 
                 // get the parent of the merge commit
                 VcsFullCommitDetails mergeParents = getCommitDetails(repo, prMergeCommit);
