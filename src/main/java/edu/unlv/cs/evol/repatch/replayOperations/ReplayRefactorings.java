@@ -13,6 +13,9 @@ public class ReplayRefactorings {
      */
     public static void replayRefactorings(ArrayList<RefactoringObject> refactoringObjects, Project project) {
         for(RefactoringObject refactoringObject : refactoringObjects) {
+            System.out.println("-> Replaying " + refactoringObject.getRefactoringType()
+                    + " (" + refactoringObject.getOriginalFilePath()
+                    + " -> " + refactoringObject.getDestinationFilePath() + ")");
             switch (refactoringObject.getRefactoringType()) {
                 case RENAME_CLASS:
                 case MOVE_CLASS:

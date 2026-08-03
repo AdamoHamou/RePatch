@@ -533,6 +533,8 @@ public class Utils {
                 // match on either endpoint of the refactoring instead.
                 if (path.equals(refactoring.getOriginalFilePath())
                         || path.equals(refactoring.getDestinationFilePath())) {
+                    System.out.println("-> Pruned " + refactoring.getRefactoringType()
+                            + " from replay: conflicting file " + path);
                     iterator.remove();
                 }
                 continue;
@@ -550,6 +552,8 @@ public class Utils {
 
             setBoundaries(refactoring);
             if (!checkReplayRefactoring(refactoring, conflictingRegions)) {
+                System.out.println("-> Pruned " + refactoring.getRefactoringType()
+                        + " from replay: overlaps conflict region in " + path);
                 iterator.remove();
             }
         }
