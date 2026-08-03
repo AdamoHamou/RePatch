@@ -522,12 +522,23 @@ public class Utils {
             return;
         }
         List<Pair<Integer, Integer>> conflictingRegions = getConflictingRegions(absolutePath);
-        for(RefactoringObject refactoring : refactorings) {
+        for(Iterator<RefactoringObject> iterator = refactorings.iterator(); iterator.hasNext(); ) {
+            RefactoringObject refactoring = iterator.next();
             if(refactoring instanceof InlineMethodObject || refactoring instanceof ExtractMethodObject) {
+                // Never replay Extract/Inline into a file git could not auto-merge:
+                // their replay operations are conflict-marker-blind, so re-applying
+                // them on top of conflict markers fabricates conflicts that plain
+                // git does not have. Their stored line numbers refer to the original
+                // commit's text, so region-level precision is not meaningful here —
+                // match on either endpoint of the refactoring instead.
+                if (path.equals(refactoring.getOriginalFilePath())
+                        || path.equals(refactoring.getDestinationFilePath())) {
+                    iterator.remove();
+                }
                 continue;
             }
 
-            if (!refactoring.getOriginalFilePath().equals(path)) {
+            if (!path.equals(refactoring.getOriginalFilePath())) {
                 continue;
             }
 
@@ -539,7 +550,7 @@ public class Utils {
 
             setBoundaries(refactoring);
             if (!checkReplayRefactoring(refactoring, conflictingRegions)) {
-                refactorings.remove(refactoring);
+                iterator.remove();
             }
         }
     }
