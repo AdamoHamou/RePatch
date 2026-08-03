@@ -184,10 +184,19 @@ public class RePatchIntegration {
                 // values[0] = Github url of the mainline
                 // values[2] = merged PR number
 
-                GHPullRequest mergedPullRequest = new GitHubUtils().getMergeCommitSha(values[0], Integer.valueOf(values[2]));
                 // Only the merge commit SHA is load-bearing (it is the commit we
-                // cherry-pick); an unmerged or missing PR has none, so skip the
-                // patch instead of NPEing and aborting the whole project run.
+                // cherry-pick). A missing/deleted PR throws (404) from the fetch,
+                // an unmerged one has no merge SHA; both skip the patch instead
+                // of aborting the whole project run.
+                GHPullRequest mergedPullRequest;
+                try {
+                    mergedPullRequest = new GitHubUtils().getMergeCommitSha(values[0], Integer.valueOf(values[2]));
+                } catch (IOException e) {
+                    System.out.println("-> SKIP PR " + values[2] + ": not found on GitHub (" + e.getMessage() + ")");
+                    patch.setDone();
+                    patch.saveIt();
+                    continue;
+                }
                 if (mergedPullRequest == null || !mergedPullRequest.isMerged()
                         || mergedPullRequest.getMergeCommitSha() == null) {
                     System.out.println("-> SKIP PR " + values[2] + ": not merged or no merge commit on GitHub");
@@ -551,8 +560,9 @@ public class RePatchIntegration {
             e.printStackTrace();
         }
         long time2 = System.currentTimeMillis();
-        // If RePatch times out
-        if(conflicts == null || (time2 - time) > 900000) {
+        // If RePatch times out; same budget as the in-plugin checks so raising
+        // -Drepatch.timeoutMinutes is honored here too.
+        if(conflicts == null || (time2 - time) > Long.getLong("repatch.timeoutMinutes", 15L) * 60_000L) {
             time = -1;
             System.out.println("-> RePatch timed out");
             if(!refactorings.isEmpty()) {

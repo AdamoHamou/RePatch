@@ -61,7 +61,11 @@ dependencies {
     implementation fileTree(dir: 'lib', include: ['*.jar'])
     // `compile` removed in Gradle 7+: replaced with `implementation`.
     implementation group: 'org.eclipse.jgit', name: 'org.eclipse.jgit', version: '5.10.0.202012080955-r'
-    implementation group: 'com.github.tsantalis', name: 'refactoring-miner', version: '2.1.0'
+    // transitive=false reproduces the locally validated classpath: the local
+    // artifact was hand-installed with a flat POM (zero dependencies), while
+    // Maven Central's POM declares six transitives (jgit among them) that would
+    // override the pinned versions above on a clean machine/CI.
+    implementation(group: 'com.github.tsantalis', name: 'refactoring-miner', version: '2.1.0') { transitive = false }
     implementation 'com.google.googlejavaformat:google-java-format:1.7'
     implementation group: 'io.reflectoring.diffparser', name: 'diffparser', version: '1.4'
     implementation 'org.eclipse.jdt:org.eclipse.jdt.core:3.24.0'
@@ -106,6 +110,18 @@ tasks.register('refactoringConflictPersistenceCheck', JavaExec) {
 
 tasks.named('runIde').configure {
     jvmArgs '-Djava.awt.headless=true', '-Xss100m', '-Xmx16g'
+    // Forward all -Drepatch.* system properties from the gradle build JVM to
+    // the forked sandbox IDE JVM, where the plugin reads them. Without this,
+    // runtime flags (repatch.scopeDetection, repatch.timeoutMinutes,
+    // repatch.refMinerTimeoutMinutes, repatch.abortOnInvertFailure) only ever
+    // reach the gradle daemon and the plugin sees defaults.
+    // Boolean flags must be passed with an explicit value (=true).
+    System.getProperties().each { k, v ->
+        String key = k.toString()
+        if (key.startsWith('repatch.')) {
+            jvmArgs("-D${key}=${v}")
+        }
+    }
     if (project.hasProperty("mode")) {
         Object x = project.findProperty("mode")
         Object y = project.findProperty("dataPath")
