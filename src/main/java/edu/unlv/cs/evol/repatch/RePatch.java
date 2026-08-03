@@ -105,6 +105,11 @@ public class RePatch extends AnAction {
         String scopeMode = System.getProperty("repatch.scopeDetection", "both");
         Set<String> rightScope = ("both".equals(scopeMode) || "right".equals(scopeMode)) ? conflictingFiles : null;
         Set<String> leftScope = ("both".equals(scopeMode) || "left".equals(scopeMode)) ? conflictingFiles : null;
+        // Detection-phase and overall wall-clock budgets, in minutes. Defaults
+        // preserve historical behavior (11-minute RefactoringMiner get, 15-minute
+        // overall budget from the start of doMerge).
+        long refMinerTimeoutMinutes = Long.getLong("repatch.refMinerTimeoutMinutes", 11L);
+        long overallBudgetMillis = Long.getLong("repatch.timeoutMinutes", 15L) * 60_000L;
         ExecutorService executor = Executors.newSingleThreadExecutor();
         AtomicReference<ArrayList<RefactoringObject>> rightRefsAtomic = new AtomicReference<>(new ArrayList<>());
         AtomicReference<ArrayList<RefactoringObject>> leftRefsAtomic = new AtomicReference<>(new ArrayList<>());
@@ -113,7 +118,7 @@ public class RePatch extends AnAction {
             leftRefsAtomic.set(detectAndSimplifyRefactorings(leftCommit, baseCommit, detectedRefactorings, leftScope));
         });
         try {
-            futureRefMiner.get(11, TimeUnit.MINUTES);
+            futureRefMiner.get(refMinerTimeoutMinutes, TimeUnit.MINUTES);
 
 
         } catch (TimeoutException e) {
@@ -131,7 +136,7 @@ public class RePatch extends AnAction {
 
         long time2 = System.currentTimeMillis();
         // If it timed out
-        if((time - time2) > 900000) {
+        if((time2 - time) > overallBudgetMillis) {
             System.out.println("RePatch Timed Out");
             return null;
         }
@@ -141,8 +146,23 @@ public class RePatch extends AnAction {
         // Update the PSI classes after the commit
         Utils.reparsePsiFiles(project);
         Utils.dumbServiceHandler(project);
+        // Optional strict mode: a failed inversion leaves the tree half-inverted,
+        // and the failed refactoring stays in the list so replay later re-applies
+        // a refactoring whose inverse never happened. Abort cleanly (-1 verdict)
+        // instead of proceeding on the mismatched tree. Off by default: inversion
+        // failures are common in validated runs (0-30 per patch) whose verdicts
+        // still matched git, so aborting on any failure would discard usable runs.
+        boolean abortOnInvertFailure = Boolean.getBoolean("repatch.abortOnInvertFailure");
         System.out.println("Inverting right refactorings");
         int failedRefactorings = InvertRefactorings.invertRefactorings(rightRefs, project);
+        if(abortOnInvertFailure && failedRefactorings > 0) {
+            Utils.log(project.getName(), failedRefactorings
+                    + " right-side inversion failures; aborting patch cleanly for " + rightCommit);
+            // checkout() cleans and hard-resets first, dropping the half-inverted
+            // tree BEFORE any commit is created from it.
+            gitUtils.checkout(leftCommit);
+            return null;
+        }
         Utils.reparsePsiFiles(project);
         Utils.dumbServiceHandler(project);
         String rightUndoCommit = gitUtils.addAndCommit();
@@ -151,7 +171,14 @@ public class RePatch extends AnAction {
         Utils.reparsePsiFiles(project);
         Utils.dumbServiceHandler(project);
         System.out.println("Inverting left refactorings");
-        failedRefactorings += InvertRefactorings.invertRefactorings(leftRefs, project);
+        int failedLeftRefactorings = InvertRefactorings.invertRefactorings(leftRefs, project);
+        failedRefactorings += failedLeftRefactorings;
+        if(abortOnInvertFailure && failedLeftRefactorings > 0) {
+            Utils.log(project.getName(), failedLeftRefactorings
+                    + " left-side inversion failures; aborting patch cleanly for " + leftCommit);
+            gitUtils.checkout(leftCommit);
+            return null;
+        }
 
         gitUtils.addAndCommit();
 
@@ -173,7 +200,7 @@ public class RePatch extends AnAction {
 
         time2 = System.currentTimeMillis();
         // Timeout if it's been 15 minutes
-        if((time - time2) > 900000) {
+        if((time2 - time) > overallBudgetMillis) {
             System.out.println("RePatch Timed Out");
             return null;
         }
