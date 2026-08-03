@@ -20,7 +20,9 @@ public class RenameParameterObject implements RefactoringObject {
     private ParameterObject refactoredParameterObject;
     private String originalFilePath;
     private String refactoredFilePath;
-    private Boolean isReplay;
+    // Replay by default, like every other replay-capable refactoring type; the
+    // receiver disables it only on a detected parameter-naming conflict.
+    private boolean isReplay = true;
 
     public RenameParameterObject(String originalClassName, String refactoredClassName,
                                  MethodSignatureObject originalMethodSignature, MethodSignatureObject destinationMethodSignature,
@@ -59,7 +61,7 @@ public class RenameParameterObject implements RefactoringObject {
         this.refactoredFilePath = refactoredOperation.getLocationInfo().getFilePath();
         this.originalParameterObject = new ParameterObject(originalParameterType, originalParameterName);
         this.refactoredParameterObject = new ParameterObject(refactoredParameterType, refactoredParameterName);
-        this.isReplay = false;
+        this.isReplay = true;
     }
 
     @Override
