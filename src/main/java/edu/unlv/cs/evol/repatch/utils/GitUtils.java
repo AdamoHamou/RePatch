@@ -49,7 +49,34 @@ public class GitUtils {
      */
     public String addAndCommit() {
         add();
-        return commit();
+        commit();
+        // The returned SHA must be exact: when the inversions changed nothing,
+        // `git commit` commits nothing and HEAD stays at the checked-out
+        // commit. rev-parse HEAD is correct in both cases, unlike the
+        // porcelain-output substring parsing inside DoGitCommit (B5).
+        List<String> out = Utils.runSystemCommandInDir(new File(repo.getRoot().getPath()),
+                "git", "rev-parse", "HEAD");
+        return out.isEmpty() ? null : out.get(0).trim();
+    }
+
+    /*
+     * Re-parent the given commit's tree onto the cherry-pick base. The undo
+     * commit is created on top of the right commit, so cherry-picking it
+     * directly applies only the inversion diff and silently drops the rest of
+     * the patch content. Applying tree(undo) relative to the base restores
+     * real cherry-pick semantics: full patch content minus the inverted
+     * refactorings. When inversion changed nothing, tree(undo) == tree(right)
+     * and this equals cherry-picking the patch itself.
+     */
+    public String reparentOntoBase(String commitSha, String baseSha) {
+        List<String> out = Utils.runSystemCommandInDir(new File(repo.getRoot().getPath()),
+                "git", "commit-tree", commitSha + "^{tree}", "-p", baseSha,
+                "-m", "RePatch undo rebased onto cherry-pick base");
+        if (out.isEmpty() || out.get(0).trim().length() != 40) {
+            System.out.println("-> commit-tree failed for " + commitSha + ": " + out);
+            return null;
+        }
+        return out.get(0).trim();
     }
 
     public void add() {

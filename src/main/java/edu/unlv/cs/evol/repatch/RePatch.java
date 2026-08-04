@@ -186,7 +186,14 @@ public class RePatch extends AnAction {
         Utils.log(project.getName(), message);
 
         // boolean isConflicting = gitUtils.merge(rightUndoCommit);
-        boolean isConflicting = gitUtils.cherryPick(rightUndoCommit);
+        // Cherry-picking the undo commit directly applies only the inversion
+        // diff (its parent is the right commit) — the patch's own content
+        // never reaches the target. Re-parent the undo tree onto the
+        // cherry-pick base so the applied diff is base -> (right minus
+        // inverted refactorings); fail open to the old behavior if the
+        // re-parent fails.
+        String rebasedUndo = gitUtils.reparentOntoBase(rightUndoCommit, baseCommit);
+        boolean isConflicting = gitUtils.cherryPick(rebasedUndo != null ? rebasedUndo : rightUndoCommit);
 
         Utils.refreshVFS();
         Utils.reparsePsiFiles(project);
