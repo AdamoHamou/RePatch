@@ -631,20 +631,29 @@ public class Utils {
     private boolean checkReplayRefactoring(RefactoringObject refactoring, List<Pair<Integer, Integer>> conflictingRegions) {
         int refStartLine = refactoring.getStartLine();
         int refEndLine = refactoring.getEndLine();
+        // Types without boundary support report 0/0; their edit surface is
+        // unknown, so keep the conservative historical behavior: never replay
+        // them into a file that has conflict regions.
+        if(refStartLine == 0 && refEndLine == 0) {
+            return false;
+        }
         for(Pair<Integer,Integer> conflictingRegion : conflictingRegions) {
             int conflictingStartLine = conflictingRegion.getLeft();
             int conflictingEndLine = conflictingRegion.getRight();
-            // If the refactoring is within the conflicting region, do not replay
-            if(refStartLine > conflictingStartLine && refEndLine < conflictingEndLine) {
-                return false;
+            // Disjoint ranges cannot interact; check the next region.
+            if(refEndLine < conflictingStartLine || refStartLine > conflictingEndLine) {
+                continue;
             }
-            // Otherwise, if the regions overlap, do not replay
-            else if(refStartLine < conflictingStartLine && refEndLine < conflictingEndLine) {
-                return false;
+            // The conflict region sits strictly inside the refactoring's range:
+            // safe for method/class renames (they edit the signature, not the
+            // body), but NOT for parameter renames, whose usage edits span the
+            // whole method body including the conflicted lines.
+            if(refStartLine < conflictingStartLine && refEndLine > conflictingEndLine
+                    && !(refactoring instanceof RenameParameterObject)) {
+                continue;
             }
-            else if(refStartLine > conflictingStartLine && refEndLine > conflictingEndLine) {
-                return false;
-            }
+            // Any other overlap: do not replay on top of conflict markers.
+            return false;
         }
         // If the regions are not related or the region is within the method or class, replay
         return true;
@@ -676,6 +685,23 @@ public class Utils {
                 return;
             }
             psiElement = psiClass;
+        }
+        else if(ref instanceof RenameParameterObject) {
+            // A parameter rename edits only its containing method (parameter
+            // scope is method-local), so the method's range is the replay's
+            // edit surface. Without boundaries the 0/0 default made every
+            // rename-parameter in a conflicting file look overlapping.
+            String filePath = ref.getOriginalFilePath();
+            String className = ((RenameParameterObject) ref).getOriginalClassName();
+            PsiClass psiClass = getPsiClassFromClassAndFileNames(className, filePath);
+            if(psiClass == null) {
+                return;
+            }
+            PsiMethod psiMethod = getPsiMethod(psiClass, ((RenameParameterObject) ref).getOriginalMethodSignature());
+            if(psiMethod == null) {
+                return;
+            }
+            psiElement = psiMethod;
         }
         else {
             return;
