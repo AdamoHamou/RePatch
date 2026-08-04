@@ -1,6 +1,7 @@
 package edu.unlv.cs.evol.repatch.invertOperations;
 
 import edu.unlv.cs.evol.repatch.refactoringObjects.RefactoringObject;
+import edu.unlv.cs.evol.repatch.utils.Utils;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.Project;
 
@@ -13,6 +14,10 @@ public class InvertRefactorings {
      */
     public static int invertRefactorings(ArrayList<RefactoringObject> refactoringObjects,
                                                                   Project project) {
+        // PSI lookups below die with IndexNotReadyException if indexing is
+        // still running (small repos reach this point before initial indexing
+        // completes); make sure the index is ready at phase entry.
+        Utils.dumbServiceHandler(project);
         long time = System.currentTimeMillis();
 
         int failedRefactorings = 0;

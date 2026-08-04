@@ -4,6 +4,7 @@ import edu.unlv.cs.evol.repatch.refactoringObjects.*;
 import edu.unlv.cs.evol.repatch.refactoringObjects.typeObjects.MethodSignatureObject;
 import edu.unlv.cs.evol.repatch.refactoringObjects.typeObjects.ParameterObject;
 import com.intellij.analysis.AnalysisScope;
+import com.intellij.ide.IdeEventQueue;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.application.WriteAction;
@@ -146,6 +147,21 @@ public class Utils {
             DumbServiceImpl dumbService = DumbServiceImpl.getInstance(project);
             // Waits for the task to finish
             dumbService.completeJustSubmittedTasks();
+            // completeJustSubmittedTasks only flushes indexing submitted from
+            // the EDT; indexing triggered by background VFS refreshes is not
+            // covered, and PSI lookups then fail with IndexNotReadyException
+            // (invert AND replay silently no-oped on a repo small enough for
+            // the pipeline to reach them before initial indexing finished).
+            // The pipeline runs ON the EDT (ApplicationStarter), where
+            // waitForSmartMode is forbidden — pump the event queue instead so
+            // indexing can complete before PSI lookups run.
+            if (ApplicationManager.getApplication().isDispatchThread()) {
+                while (DumbService.isDumb(project)) {
+                    IdeEventQueue.getInstance().flushQueue();
+                }
+            } else {
+                dumbService.waitForSmartMode();
+            }
         }
     }
 
