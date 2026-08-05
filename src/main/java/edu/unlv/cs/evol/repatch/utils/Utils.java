@@ -463,13 +463,76 @@ public class Utils {
     }
 
     public PsiClass getPsiClassFromClassAndFileNames(String className, String filePath) {
-        JavaPsiFacade jPF = new JavaPsiFacadeImpl(project);
-        PsiClass psiClass = jPF.findClass(className, GlobalSearchScope.allScope((project)));
-        // If the class isn't found, there might not have been a gradle file and we need to find the class another way
-        if(psiClass == null) {
-            psiClass = getPsiClassByFilePath(filePath, className);
+        PsiClass psiClass = findPsiClassOnce(className, filePath);
+        if(psiClass != null) {
+            return psiClass;
+        }
+        // Null can mean the class is truly absent OR that the initial indexing
+        // scan has not caught up with the checked-out tree: the pipeline runs
+        // on the EDT and can reach PSI lookups before the scan is even queued,
+        // in which case isDumb() is still false and the indexes are simply
+        // empty (every invert then silently no-ops — the vacuous-inversion
+        // mode). The two are distinguishable: the file existing on disk while
+        // FilenameIndex cannot see it proves index blindness, so refresh,
+        // pump, and retry only in that state, bounded by a deadline.
+        int rounds = 0;
+        long deadline = System.currentTimeMillis() + 120_000L;
+        while(psiClass == null && isIndexBlindTo(filePath) && System.currentTimeMillis() < deadline) {
+            if(rounds++ == 0) {
+                System.out.println("-> Index not ready for " + filePath + "; waiting for indexing to catch up");
+            }
+            refreshVFS();
+            reparsePsiFiles(project);
+            dumbServiceHandler(project);
+            if(ApplicationManager.getApplication().isDispatchThread()) {
+                IdeEventQueue.getInstance().flushQueue();
+            }
+            try {
+                Thread.sleep(250);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            psiClass = findPsiClassOnce(className, filePath);
+        }
+        if(rounds > 0) {
+            System.out.println("-> Index readiness wait ended after " + rounds + " rounds; "
+                    + className + (psiClass != null ? " resolved" : " STILL unresolved"));
         }
         return psiClass;
+    }
+
+    private PsiClass findPsiClassOnce(String className, String filePath) {
+        try {
+            JavaPsiFacade jPF = new JavaPsiFacadeImpl(project);
+            PsiClass psiClass = jPF.findClass(className, GlobalSearchScope.allScope((project)));
+            // If the class isn't found, there might not have been a gradle file and we need to find the class another way
+            if(psiClass == null) {
+                psiClass = getPsiClassByFilePath(filePath, className);
+            }
+            return psiClass;
+        } catch (com.intellij.openapi.project.IndexNotReadyException e) {
+            return null;
+        }
+    }
+
+    /*
+     * True when the file exists in the working tree but the filename index
+     * cannot see it — the signature of querying before initial indexing has
+     * completed (a legitimately deleted/renamed file returns false and the
+     * caller's null stands immediately).
+     */
+    private boolean isIndexBlindTo(String filePath) {
+        File onDisk = new File(project.getBasePath(), filePath);
+        if(!onDisk.exists()) {
+            return false;
+        }
+        String fileName = filePath.substring(filePath.lastIndexOf("/") + 1);
+        try {
+            return FilenameIndex.getFilesByName(project, fileName, GlobalSearchScope.allScope(project)).length == 0;
+        } catch (com.intellij.openapi.project.IndexNotReadyException e) {
+            return true;
+        }
     }
 
     public static PsiMethod getPsiMethod(PsiClass psiClass, MethodSignatureObject methodSignatureObject) {
