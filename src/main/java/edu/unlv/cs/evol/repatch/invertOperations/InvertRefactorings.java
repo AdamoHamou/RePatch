@@ -18,6 +18,10 @@ public class InvertRefactorings {
         // still running (small repos reach this point before initial indexing
         // completes); make sure the index is ready at phase entry.
         Utils.dumbServiceHandler(project);
+        System.out.println("MODELPROBE invert-entry modules="
+                + com.intellij.openapi.module.ModuleManager.getInstance(project).getModules().length
+                + " contentRoots="
+                + com.intellij.openapi.roots.ProjectRootManager.getInstance(project).getContentRoots().length);
         long time = System.currentTimeMillis();
 
         int failedRefactorings = 0;

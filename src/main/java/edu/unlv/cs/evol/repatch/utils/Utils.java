@@ -171,6 +171,42 @@ public class Utils {
     }
 
     /*
+     * The JPS workspace model loads asynchronously after openOrImport and is
+     * applied on the EDT at non-modal modality. The pipeline monopolizes the
+     * EDT and later runs under modal contexts (progress, dumb-queue
+     * processing), so when the model loses the initial race its application
+     * starves FOREVER: 0 modules -> 0 content roots -> empty indexes -> every
+     * PSI lookup null -> vacuous inversions. (Observed: flaked runs stay at
+     * modules=0 for 20+ minutes while clean runs show 43 within seconds;
+     * startupPassed=true in both.) Must be called right after project open,
+     * BEFORE any modal phase exists, where pumping still dispatches the
+     * model-application runnables.
+     */
+    public static void waitForProjectModel(Project project) {
+        if (project == null) {
+            return;
+        }
+        long deadline = System.currentTimeMillis() + 300_000L;
+        int modules = ModuleManager.getInstance(project).getModules().length;
+        while (modules == 0 && System.currentTimeMillis() < deadline) {
+            if (ApplicationManager.getApplication().isDispatchThread()) {
+                IdeEventQueue.getInstance().flushQueue();
+            }
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            modules = ModuleManager.getInstance(project).getModules().length;
+        }
+        System.out.println("-> Project model loaded: " + modules + " modules, "
+                + com.intellij.openapi.roots.ProjectRootManager.getInstance(project).getContentRoots().length
+                + " content roots");
+        dumbServiceHandler(project);
+    }
+
+    /*
      * Use the file path to add the source root to the module if it is not already in the module.
      */
     public void addSourceRoot(String filePath, String filePackage) {
@@ -478,9 +514,17 @@ public class Utils {
         int rounds = 0;
         long deadline = System.currentTimeMillis() + 120_000L;
         while(psiClass == null && isIndexBlindTo(filePath) && System.currentTimeMillis() < deadline) {
-            if(rounds++ == 0) {
+            if(rounds == 0) {
                 System.out.println("-> Index not ready for " + filePath + "; waiting for indexing to catch up");
             }
+            // Diagnostic snapshot on a sparse schedule (rounds 0,1,2,4,8,...):
+            // captures which layer is failing — VFS, PSI-by-path, or the
+            // index query — plus dumb/startup state, to pin the flake's
+            // mechanism instead of guessing at it.
+            if(rounds <= 2 || (rounds & (rounds - 1)) == 0) {
+                logIndexProbe(rounds, className, filePath);
+            }
+            rounds++;
             refreshVFS();
             reparsePsiFiles(project);
             dumbServiceHandler(project);
@@ -498,8 +542,71 @@ public class Utils {
         if(rounds > 0) {
             System.out.println("-> Index readiness wait ended after " + rounds + " rounds; "
                     + className + (psiClass != null ? " resolved" : " STILL unresolved"));
+            if(psiClass == null) {
+                logIndexProbe(rounds, className, filePath);
+            }
         }
         return psiClass;
+    }
+
+    /*
+     * One-line state snapshot of every layer involved in resolving a class,
+     * from the raw VFS up to the index query. INDEXPROBE lines are grep bait
+     * for run forensics.
+     */
+    private void logIndexProbe(int round, String className, String filePath) {
+        StringBuilder sb = new StringBuilder("INDEXPROBE round=").append(round);
+        try {
+            sb.append(" modules=").append(ModuleManager.getInstance(project).getModules().length);
+            sb.append(" contentRoots=").append(
+                    com.intellij.openapi.roots.ProjectRootManager.getInstance(project).getContentRoots().length);
+            sb.append(" dumb=").append(DumbService.isDumb(project));
+            try {
+                sb.append(" startupPassed=").append(
+                        com.intellij.ide.startup.StartupManagerEx.getInstanceEx(project).postStartupActivityPassed());
+            } catch (Throwable t) {
+                sb.append(" startupPassed=?").append(t.getClass().getSimpleName());
+            }
+            String absPath = project.getBasePath() + "/" + filePath;
+            VirtualFile vf = LocalFileSystem.getInstance().findFileByPath(absPath);
+            if(vf == null) {
+                vf = LocalFileSystem.getInstance().refreshAndFindFileByPath(absPath);
+                sb.append(" vfs=").append(vf == null ? "MISSING" : "found-after-refresh");
+            } else {
+                sb.append(" vfs=").append(vf.isValid() ? "valid" : "INVALID");
+            }
+            if(vf != null) {
+                PsiFile pf = PsiManager.getInstance(project).findFile(vf);
+                if(pf instanceof PsiJavaFile) {
+                    PsiClass[] classes = ((PsiJavaFile) pf).getClasses();
+                    boolean hit = false;
+                    for(PsiClass c : classes) {
+                        if(Objects.equals(c.getQualifiedName(), className)) { hit = true; break; }
+                    }
+                    sb.append(" psiByPath=").append(classes.length).append("classes,target=").append(hit);
+                } else {
+                    sb.append(" psiByPath=").append(pf == null ? "null" : pf.getClass().getSimpleName());
+                }
+                sb.append(" inProjectScope=").append(
+                        GlobalSearchScope.projectScope(project).contains(vf));
+            }
+            String fileName = filePath.substring(filePath.lastIndexOf("/") + 1);
+            try {
+                sb.append(" filenameIdx=").append(
+                        FilenameIndex.getFilesByName(project, fileName, GlobalSearchScope.allScope(project)).length);
+            } catch (Throwable t) {
+                sb.append(" filenameIdx=").append(t.getClass().getSimpleName());
+            }
+            try {
+                sb.append(" findClass=").append(
+                        new JavaPsiFacadeImpl(project).findClass(className, GlobalSearchScope.allScope(project)) != null);
+            } catch (Throwable t) {
+                sb.append(" findClass=").append(t.getClass().getSimpleName());
+            }
+        } catch (Throwable t) {
+            sb.append(" probeError=").append(t);
+        }
+        System.out.println(sb);
     }
 
     private PsiClass findPsiClassOnce(String className, String filePath) {

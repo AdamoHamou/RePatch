@@ -641,6 +641,10 @@ public class RePatchIntegration {
             }
 
             this.project = ProjectUtil.openOrImport(pathToProject.toPath(), null, false);
+            // Without this, the pipeline races the async workspace-model load
+            // and, on losing, runs the whole scenario against a module-less
+            // project (empty indexes, silently no-oped refactorings).
+            edu.unlv.cs.evol.repatch.utils.Utils.waitForProjectModel(this.project);
 
         }
         catch(Exception e) {
