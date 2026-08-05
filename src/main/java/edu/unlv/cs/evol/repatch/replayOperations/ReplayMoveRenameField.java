@@ -59,7 +59,7 @@ public class ReplayMoveRenameField {
             RefactoringFactory factory = JavaRefactoringFactory.getInstance(project);
             assert psiField != null;
             // Rename the original field back to the refactored field
-            RenameRefactoring renameRefactoring = factory.createRename(psiField, renamedField, true, true);
+            RenameRefactoring renameRefactoring = factory.createRename(psiField, renamedField, false, false);
             UsageInfo[] refactoringUsages = renameRefactoring.findUsages();
             renameRefactoring.doRefactoring(refactoringUsages);
         }

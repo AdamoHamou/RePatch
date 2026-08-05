@@ -163,9 +163,28 @@ public class RePatch extends AnAction {
             gitUtils.checkout(leftCommit);
             return null;
         }
+        // Inversion edits outside the patch's own file set can only be
+        // over-reach (comment/text-occurrence rewrites, PSI resolution
+        // spill-over); they would ride the undo commit into the cherry-pick
+        // as spurious conflicts, so restore them before committing.
+        int outOfFootprint = gitUtils.restoreFilesOutsideFootprint(baseCommit, rightCommit);
+        if(outOfFootprint > 0) {
+            Utils.log(project.getName(), "-> Discarded " + outOfFootprint
+                    + " out-of-footprint inversion edits for " + rightCommit);
+        }
         Utils.reparsePsiFiles(project);
         Utils.dumbServiceHandler(project);
         String rightUndoCommit = gitUtils.addAndCommit();
+        if(!rightRefs.isEmpty() && rightUndoCommit != null
+                && gitUtils.sameTree(rightUndoCommit, rightCommit)) {
+            // The rename processors resolved nothing and edited nothing:
+            // every "inverted" refactoring was a no-op, so the cherry-pick
+            // degenerates to a plain cherry-pick of the patch. Counted as
+            // success by the per-operation handlers, hence this explicit
+            // marker for run forensics.
+            Utils.log(project.getName(), "-> Vacuous inversion: undo tree identical to right commit "
+                    + rightCommit + " despite " + rightRefs.size() + " refactorings to invert");
+        }
         gitUtils.checkout(leftCommit);
         // Update the PSI classes after the commit
         Utils.reparsePsiFiles(project);

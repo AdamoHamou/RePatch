@@ -57,7 +57,7 @@ public class ReplayRenameParameter {
         }
 
         RefactoringFactory factory = JavaRefactoringFactory.getInstance(project);
-        RenameRefactoring renameRefactoring = factory.createRename(psiParameter, refactoredParameterName, true, true);
+        RenameRefactoring renameRefactoring = factory.createRename(psiParameter, refactoredParameterName, false, false);
         UsageInfo[] refactoringUsages = renameRefactoring.findUsages();
         renameRefactoring.doRefactoring(refactoringUsages);
 

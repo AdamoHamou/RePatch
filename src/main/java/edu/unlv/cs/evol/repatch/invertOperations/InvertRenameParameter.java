@@ -57,7 +57,7 @@ public class InvertRenameParameter {
         }
 
         RefactoringFactory factory = JavaRefactoringFactory.getInstance(project);
-        RenameRefactoring renameRefactoring = factory.createRename(psiParameter, originalParameterName, true, true);
+        RenameRefactoring renameRefactoring = factory.createRename(psiParameter, originalParameterName, false, false);
         UsageInfo[] refactoringUsages = renameRefactoring.findUsages();
         renameRefactoring.doRefactoring(refactoringUsages);
 

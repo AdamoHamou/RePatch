@@ -16,7 +16,9 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class GitUtils {
@@ -77,6 +79,66 @@ public class GitUtils {
             return null;
         }
         return out.get(0).trim();
+    }
+
+    /*
+     * Guardrail against inversion over-reach: an IDE rename whose PSI
+     * resolution reaches beyond the refactored element can edit files the
+     * patch never touched, and those edits ride the undo commit into the
+     * cherry-pick as spurious conflicts (e.g. a rename inversion rewriting
+     * 380+ files). Before the undo tree is committed, restore every working
+     * tree change that is outside the patch's own footprint
+     * (git diff --name-only base..right). Returns the number of paths
+     * restored or removed.
+     */
+    public int restoreFilesOutsideFootprint(String baseSha, String rightSha) {
+        File root = new File(repo.getRoot().getPath());
+        Set<String> footprint = new HashSet<>();
+        for (String path : Utils.runSystemCommandInDir(root,
+                "git", "diff", "--name-only", baseSha, rightSha)) {
+            if (!path.trim().isEmpty()) {
+                footprint.add(path.trim());
+            }
+        }
+        int restored = 0;
+        for (String line : Utils.runSystemCommandInDir(root, "git", "status", "--porcelain")) {
+            if (line.length() < 4) {
+                continue;
+            }
+            String status = line.substring(0, 2);
+            String path = line.substring(3).trim();
+            if (path.isEmpty() || footprint.contains(path)) {
+                continue;
+            }
+            if (status.equals("??")) {
+                // Created by the inversion, absent at the right commit: the
+                // later `git add -A` would fold it into the undo tree.
+                Utils.runSystemCommandInDir(root, "git", "clean", "-f", "--", path);
+                System.out.println("-> Removed out-of-footprint inversion file: " + path);
+            } else {
+                Utils.runSystemCommandInDir(root, "git", "checkout", "--", path);
+                System.out.println("-> Restored out-of-footprint inversion edit: " + path);
+            }
+            restored++;
+        }
+        if (restored > 0) {
+            Utils.refreshVFS();
+        }
+        return restored;
+    }
+
+    /*
+     * True when both revisions resolve to the same tree object. Used to
+     * detect vacuous inversions: the undo commit's tree matching the right
+     * commit's tree means the inversion machinery edited nothing at all.
+     */
+    public boolean sameTree(String shaA, String shaB) {
+        File root = new File(repo.getRoot().getPath());
+        List<String> a = Utils.runSystemCommandInDir(root, "git", "rev-parse", shaA + "^{tree}");
+        List<String> b = Utils.runSystemCommandInDir(root, "git", "rev-parse", shaB + "^{tree}");
+        return !a.isEmpty() && !b.isEmpty()
+                && a.get(0).trim().length() == 40
+                && a.get(0).trim().equals(b.get(0).trim());
     }
 
     public void add() {

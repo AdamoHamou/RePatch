@@ -74,7 +74,7 @@ public class InvertMoveRenameField {
                 return;
             }
 //            assert psiField != null;
-            RenameRefactoring renameRefactoring = factory.createRename(psiField, originalField, true, true);
+            RenameRefactoring renameRefactoring = factory.createRename(psiField, originalField, false, false);
             UsageInfo[] refactoringUsages = renameRefactoring.findUsages();
             renameRefactoring.doRefactoring(refactoringUsages);
         }

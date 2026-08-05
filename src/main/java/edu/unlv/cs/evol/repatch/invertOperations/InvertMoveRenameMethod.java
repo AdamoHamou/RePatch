@@ -57,7 +57,7 @@ public class InvertMoveRenameMethod {
         // to the original operation
         if(moveRenameMethodObject.isRenameMethod()) {
             RefactoringFactory factory = JavaRefactoringFactory.getInstance(project);
-            RenameRefactoring renameRefactoring = factory.createRename(psiMethod, originalMethodName, true, true);
+            RenameRefactoring renameRefactoring = factory.createRename(psiMethod, originalMethodName, false, false);
             UsageInfo[] refactoringUsages = renameRefactoring.findUsages();
             renameRefactoring.doRefactoring(refactoringUsages);
 

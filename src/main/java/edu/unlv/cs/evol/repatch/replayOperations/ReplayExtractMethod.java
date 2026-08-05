@@ -307,7 +307,7 @@ public class ReplayExtractMethod {
             if(psiParameter == null) {
                 return;
             }
-            RenameRefactoring renameRefactoring = factory.createRename(psiParameter, parameterObjectName, true, false);
+            RenameRefactoring renameRefactoring = factory.createRename(psiParameter, parameterObjectName, false, false);
             UsageInfo[] refactoringUsages = renameRefactoring.findUsages();
             renameRefactoring.doRefactoring(refactoringUsages);
         }

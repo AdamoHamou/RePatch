@@ -49,7 +49,7 @@ public class ReplayRenamePackage {
 
 
         RefactoringFactory factory = JavaRefactoringFactory.getInstance(project);
-        RenameRefactoring renameRefactoring = factory.createRename(originalPsiPackage, renamedPackageName, true, true);
+        RenameRefactoring renameRefactoring = factory.createRename(originalPsiPackage, renamedPackageName, false, false);
         UsageInfo[] refactoringUsages = renameRefactoring.findUsages();
         if(refactoringUsages.length > 0) {
             renameRefactoring.doRefactoring(refactoringUsages);

@@ -48,7 +48,7 @@ public class InvertRenamePackage {
 
 
         RefactoringFactory factory = JavaRefactoringFactory.getInstance(project);
-        RenameRefactoring renameRefactoring = factory.createRename(refactoredPsiPackage, originalPackageName, true, true);
+        RenameRefactoring renameRefactoring = factory.createRename(refactoredPsiPackage, originalPackageName, false, false);
         UsageInfo[] refactoringUsages = renameRefactoring.findUsages();
         if(refactoringUsages.length > 0) {
             renameRefactoring.doRefactoring(refactoringUsages);
