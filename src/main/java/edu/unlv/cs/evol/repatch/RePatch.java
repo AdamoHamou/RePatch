@@ -119,16 +119,20 @@ public class RePatch extends AnAction {
         });
         try {
             futureRefMiner.get(refMinerTimeoutMinutes, TimeUnit.MINUTES);
-
-
         } catch (TimeoutException e) {
+            // Without the cancel, the detection thread keeps mining inside a
+            // dead scenario, holding CPU and JGit handles into the next one.
+            futureRefMiner.cancel(true);
             System.out.println("RePatch Timed Out");
             return null;
         }
         catch (InterruptedException | ExecutionException e) {
+            futureRefMiner.cancel(true);
             System.out.println("There was an error detecting refactorings");
             e.printStackTrace();
             return null;
+        } finally {
+            executor.shutdownNow();
         }
 
         ArrayList<RefactoringObject> rightRefs = rightRefsAtomic.get();

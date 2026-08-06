@@ -192,9 +192,16 @@ public class RePatchIntegration {
 //            System.out.println("VALUES: " + Arrays.toString(values));
             if(values[1].contains(projectName)) {
                 System.out.println(">>>>>>>>>Patch Integration " + ++i + ": PR " + values[2]+ "<<<<<<<<<<");
-                // add PR to patch table
-                Patch patch = new Patch(Integer.valueOf(values[2]),String.valueOf(values[3]),0, proj);
-                patch.saveIt();
+                // Find-or-create: unconditionally inserting duplicated the
+                // patch row on every re-run of the same scenario list, and
+                // downstream findFirst calls then read whichever duplicate
+                // happened to come back first.
+                Patch patch = Patch.findFirst("number = ? and project_id = ?",
+                        Integer.valueOf(values[2]), proj.getId());
+                if (patch == null) {
+                    patch = new Patch(Integer.valueOf(values[2]), String.valueOf(values[3]), 0, proj);
+                    patch.saveIt();
+                }
                 // Get the merge commit of the PR
                 // values[0] = Github url of the mainline
                 // values[2] = merged PR number
