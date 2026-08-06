@@ -387,6 +387,29 @@ public class Utils {
     }
 
     /*
+     * Pin the loaded project model for the rest of the pipeline run. The JPS
+     * synchronizer re-reads the module model whenever a VFS refresh reports
+     * .idea/.iml changes; under checkout churn that incremental reload can go
+     * through a stale VFS view and apply an EMPTY model, which the IDE then
+     * persists by deleting every .iml on the next save. Both reload entry
+     * points (needToReloadProjectEntities / reloadProjectEntities) honor
+     * StoreReloadManager.isReloadBlocked(), and the platform itself takes
+     * this same block around every VFS refresh session — holding it for the
+     * process lifetime suppresses the destruction at its source. The initial
+     * model load is NOT affected: DelayedProjectSynchronizer syncs via
+     * loadProject(), which does not check the block. The backup-restore heal
+     * in waitForWorkspaceSettle stays as a fallback.
+     */
+    public static void pinProjectModel(Project project) {
+        if (project == null) {
+            return;
+        }
+        com.intellij.configurationStore.StoreReloadManager.Companion.getInstance(project)
+                .blockReloadingProjectOnExternalChanges();
+        System.out.println("-> Project-store reload blocked for pipeline lifetime (model pinned)");
+    }
+
+    /*
      * Use the file path to add the source root to the module if it is not already in the module.
      */
     public void addSourceRoot(String filePath, String filePackage) {

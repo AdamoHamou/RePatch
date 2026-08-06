@@ -714,6 +714,9 @@ public class RePatchIntegration {
             // and, on losing, runs the whole scenario against a module-less
             // project (empty indexes, silently no-oped refactorings).
             edu.unlv.cs.evol.repatch.utils.Utils.waitForProjectModel(this.project);
+            // With the model loaded, freeze it: VFS-event-driven JPS reloads
+            // during checkout churn are what destroyed it mid-run.
+            edu.unlv.cs.evol.repatch.utils.Utils.pinProjectModel(this.project);
 
         }
         catch(Exception e) {
