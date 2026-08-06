@@ -1,0 +1,11 @@
+# SPEC-12c golden baseline: sample_data (5 kafka patches), recorded 2026-08-06
+# from a fresh deterministic run (DB repatch_golden_baseline, log iso-runs/golden.log).
+# Format: number,merge_tool,files/conflicts/loc — clean-merging patches: number,none,-
+12592,none,-
+12660,Git-CherryPick,2/2/17
+12660,RePatch,2/2/17
+13023,Git-CherryPick,1/1/107
+13023,RePatch,1/1/107
+13032,none,-
+13050,Git-CherryPick,1/1/6
+13050,RePatch,1/1/6
