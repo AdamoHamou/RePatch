@@ -140,7 +140,7 @@ public class RePatch extends AnAction {
 
         long time2 = System.currentTimeMillis();
         // If it timed out
-        if((time2 - time) > overallBudgetMillis) {
+        if(budgetExceeded(time, time2, overallBudgetMillis)) {
             System.out.println("RePatch Timed Out");
             return null;
         }
@@ -230,7 +230,7 @@ public class RePatch extends AnAction {
 
         time2 = System.currentTimeMillis();
         // Timeout if it's been 15 minutes
-        if((time2 - time) > overallBudgetMillis) {
+        if(budgetExceeded(time, time2, overallBudgetMillis)) {
             System.out.println("RePatch Timed Out");
             return null;
         }
@@ -301,8 +301,9 @@ public class RePatch extends AnAction {
      * Refactorings without a file path (e.g. Rename Package) are kept: they
      * are inherently cross-file.
      */
-    private ArrayList<RefactoringObject> filterToConflictingFiles(String commit, ArrayList<RefactoringObject> refactorings,
-                                                                  Set<String> conflictingFiles) {
+    // Static + package-private for DetectionScopeTest: pure set logic.
+    static ArrayList<RefactoringObject> filterToConflictingFiles(String commit, ArrayList<RefactoringObject> refactorings,
+                                                                 Set<String> conflictingFiles) {
         if (conflictingFiles == null || conflictingFiles.isEmpty()) {
             return refactorings;
         }
@@ -318,6 +319,15 @@ public class RePatch extends AnAction {
         System.out.println("-> Scoped detection for " + commit + " to conflicting files: kept "
                 + scoped.size() + "/" + refactorings.size());
         return scoped;
+    }
+
+    /*
+     * SPEC-7: the wall-clock budget test, extracted so the arithmetic is unit
+     * testable. The historical bug was reversed operands (start - now), which
+     * is always negative and made both mid-pipeline timeout checks dead code.
+     */
+    static boolean budgetExceeded(long startMillis, long nowMillis, long budgetMillis) {
+        return nowMillis - startMillis > budgetMillis;
     }
 
 }

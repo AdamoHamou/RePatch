@@ -61,6 +61,24 @@ public class RePatchIntegration {
      * repatch.* property forwarding in build.gradle. Default preserves the
      * historical sample_data behavior.
      */
+    static final int PR_FETCH_MAX_ATTEMPTS = 3;
+
+    /*
+     * B4/SPEC-9: classify a PR-fetch IOException. A GitHub 404 is a permanent
+     * fact about the PR (skip it and mark done); anything else is assumed
+     * transient network trouble — retry up to the cap, then give up WITHOUT
+     * marking done so a re-run picks the patch up. Mislabeling a transient
+     * failure as "not found" once cost a valid patch a sticky skip.
+     */
+    enum PrFetchFailure { PERMANENT_NOT_FOUND, RETRY, GIVE_UP }
+
+    static PrFetchFailure classifyPrFetchFailure(IOException e, int attempt, int maxAttempts) {
+        if (e instanceof org.kohsuke.github.GHFileNotFoundException) {
+            return PrFetchFailure.PERMANENT_NOT_FOUND;
+        }
+        return attempt >= maxAttempts ? PrFetchFailure.GIVE_UP : PrFetchFailure.RETRY;
+    }
+
     static String dataSetDir() {
         String dataSet = System.getProperty("repatch.dataSet", "sample");
         if (!dataSet.equals("sample") && !dataSet.equals("complete")) {
@@ -221,14 +239,16 @@ public class RePatchIntegration {
                     try {
                         mergedPullRequest = new GitHubUtils().getMergeCommitSha(values[0], Integer.valueOf(values[2]));
                         break;
-                    } catch (org.kohsuke.github.GHFileNotFoundException e) {
-                        System.out.println("-> SKIP PR " + values[2] + ": not found on GitHub (" + e.getMessage() + ")");
-                        patch.setDone();
-                        patch.saveIt();
-                        prFetchFailed = true;
-                        break;
                     } catch (IOException e) {
-                        if (attempt >= 3) {
+                        PrFetchFailure disposition = classifyPrFetchFailure(e, attempt, PR_FETCH_MAX_ATTEMPTS);
+                        if (disposition == PrFetchFailure.PERMANENT_NOT_FOUND) {
+                            System.out.println("-> SKIP PR " + values[2] + ": not found on GitHub (" + e.getMessage() + ")");
+                            patch.setDone();
+                            patch.saveIt();
+                            prFetchFailed = true;
+                            break;
+                        }
+                        if (disposition == PrFetchFailure.GIVE_UP) {
                             System.out.println("-> SKIP PR " + values[2] + ": GitHub unreachable after "
                                     + attempt + " attempts (" + e.getMessage() + "); leaving patch pending");
                             prFetchFailed = true;
