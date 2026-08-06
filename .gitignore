@@ -283,3 +283,6 @@ cython_debug/
 
 .intellijPlatform/
 .prerun_*
+
+# Real GitHub token (template is committed instead)
+src/main/resources/github-oauth.properties
