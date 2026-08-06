@@ -16,8 +16,9 @@ public class InvertRefactorings {
                                                                   Project project) {
         // PSI lookups below die with IndexNotReadyException if indexing is
         // still running (small repos reach this point before initial indexing
-        // completes); make sure the index is ready at phase entry.
-        Utils.dumbServiceHandler(project);
+        // completes); make sure the index is ready and the workspace roots
+        // have stopped moving at phase entry.
+        Utils.waitForWorkspaceSettle(project);
         System.out.println("MODELPROBE invert-entry modules="
                 + com.intellij.openapi.module.ModuleManager.getInstance(project).getModules().length
                 + " contentRoots="
@@ -152,6 +153,10 @@ public class InvertRefactorings {
                     break;
 
             }
+            // Each inversion's edits must be committed and indexed before the
+            // next inversion's findUsages runs, or usages are missed
+            // nondeterministically.
+            Utils.settleAfterPsiEdit(project);
 
         }
         // Save all of the refactoring changes from memory onto disk

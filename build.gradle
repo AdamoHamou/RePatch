@@ -110,6 +110,13 @@ tasks.register('refactoringConflictPersistenceCheck', JavaExec) {
 
 tasks.named('runIde').configure {
     jvmArgs '-Djava.awt.headless=true', '-Xss100m', '-Xmx16g'
+    // The evaluation clone carries a committed JPS module model (gradle idea).
+    // Left alone, the IDE's Gradle auto-import asynchronously REPLACES it
+    // mid-run (43 JPS modules -> 183 Gradle modules), and that swap can be
+    // caught in flight or fail outright, leaving the project module-less:
+    // empty indexes, silently no-oped inversions, nondeterministic verdicts.
+    // Pin the deterministic JPS model by disabling auto-import.
+    jvmArgs '-Dexternal.system.auto.import.disabled=true'
     // Forward all -Drepatch.* system properties from the gradle build JVM to
     // the forked sandbox IDE JVM, where the plugin reads them. Without this,
     // runtime flags (repatch.scopeDetection, repatch.timeoutMinutes,

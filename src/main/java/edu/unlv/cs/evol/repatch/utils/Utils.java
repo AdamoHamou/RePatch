@@ -171,6 +171,186 @@ public class Utils {
     }
 
     /*
+     * Make one refactoring's edits fully visible to the next one's usage
+     * search. Each rename edits documents and triggers async index updates;
+     * without a settle point, refactoring N+1's findUsages races those
+     * updates and nondeterministically misses usages (observed on 16954:
+     * identical runs alternate between complete and incomplete inversions
+     * of the same refactoring list, e.g. a usage in KafkaStreams.java found
+     * in one run and missed in the next). Commit documents, drain the EDT
+     * queue, then wait out any dumb mode the updates triggered.
+     */
+    public static void settleAfterPsiEdit(Project project) {
+        PsiDocumentManager.getInstance(project).commitAllDocuments();
+        if (ApplicationManager.getApplication().isDispatchThread()) {
+            IdeEventQueue.getInstance().flushQueue();
+        }
+        dumbServiceHandler(project);
+    }
+
+    /*
+     * Phase-entry gate: wait until the workspace stops moving. Content-root
+     * recalculation after checkouts runs asynchronously (observed: 149 roots
+     * at right-invert entry dropping to 108 by left-invert entry) and
+     * rescopes usage searches while a phase runs. Require module and root
+     * counts to hold stable across consecutive samples before proceeding,
+     * then drain the dumb queue.
+     */
+    /*
+     * The workspace model can be DESTROYED mid-run: the platform's JPS
+     * synchronizer reacts to (real or VFS-phantom) changes in .idea/*.iml
+     * files and re-applies the model from its view of the disk; in a losing
+     * timing that apply is empty, and a project that had 43 modules drops to
+     * 0 for the rest of the run (observed across cached, cold-cache, and
+     * auto-import-disabled configurations). The on-disk files stay intact
+     * throughout, so the same watcher that zeroed the model can restore it:
+     * touch modules.xml, refresh it in the VFS, and pump until the reload
+     * re-applies a non-empty model.
+     */
+    public static boolean healProjectModel(Project project) {
+        try {
+            String modulesXml = project.getBasePath() + "/.idea/modules.xml";
+            File f = new File(modulesXml);
+            if (!f.exists()) {
+                System.out.println("-> Model heal: no modules.xml at " + modulesXml);
+                return false;
+            }
+            // Passive heal (touch + VFS refresh + pump) does NOT work: the
+            // JPS watcher either ignores the touch or re-applies empty again.
+            // Worse, the IDE SAVES the destroyed state back to disk (an empty
+            // modules.xml), so the on-disk truth is gone too. Restore the
+            // model files from a pristine backup the IDE never writes to
+            // (-Drepatch.modelBackupDir, provided by the run harness), then
+            // load each .iml directly through ModuleManager — no platform
+            // watcher involved.
+            System.out.println("-> Model heal: modules gone, loading .imls directly from modules.xml");
+            List<String> imlPaths = parseImlPaths(f);
+            String backupDir = System.getProperty("repatch.modelBackupDir");
+            long existing = imlPaths.stream().filter(p -> new File(p).exists()).count();
+            // The platform deletes the .iml files of "removed" modules when
+            // the zeroed model auto-saves (observed: modules.xml intact with
+            // 43 entries, all 43 .imls gone from disk). Restore whenever any
+            // model file is missing, not just when modules.xml is empty.
+            if ((imlPaths.isEmpty() || existing < imlPaths.size()) && backupDir != null) {
+                System.out.println("-> Model heal: " + existing + "/" + imlPaths.size()
+                        + " imls on disk; restoring model files from " + backupDir);
+                restoreModelFilesFromBackup(backupDir, project.getBasePath());
+                imlPaths = parseImlPaths(f);
+            }
+            System.out.println("-> Model heal: " + imlPaths.size() + " iml entries in modules.xml, "
+                    + imlPaths.stream().filter(p -> new File(p).exists()).count() + " on disk");
+            int loaded = 0;
+            for (String imlPath : imlPaths) {
+                if (!new File(imlPath).exists()) {
+                    continue;
+                }
+                try {
+                    WriteAction.runAndWait(() ->
+                            ModuleManager.getInstance(project).loadModule(Paths.get(imlPath)));
+                    loaded++;
+                } catch (Throwable perModule) {
+                    System.out.println("-> Model heal: could not load " + imlPath + ": " + perModule);
+                }
+            }
+            if (ApplicationManager.getApplication().isDispatchThread()) {
+                IdeEventQueue.getInstance().flushQueue();
+            }
+            dumbServiceHandler(project);
+            int m = ModuleManager.getInstance(project).getModules().length;
+            System.out.println("-> Model heal " + (m > 0 ? "succeeded: " + m + " modules (" + loaded
+                    + " imls loaded)" : "FAILED: still 0 modules after loading " + loaded + " imls"));
+            return m > 0;
+        } catch (Throwable t) {
+            System.out.println("-> Model heal error: " + t);
+            return false;
+        }
+    }
+
+    private static List<String> parseImlPaths(File modulesXml) throws IOException {
+        String xml = new String(Files.readAllBytes(modulesXml.toPath()));
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("filepath=\"([^\"]+)\"").matcher(xml);
+        List<String> imlPaths = new ArrayList<>();
+        String projectDir = modulesXml.getParentFile().getParent();
+        while (matcher.find()) {
+            imlPaths.add(matcher.group(1).replace("$PROJECT_DIR$", projectDir));
+        }
+        return imlPaths;
+    }
+
+    /*
+     * Copy .idea/modules.xml, .idea/misc.xml and every *.iml (by relative
+     * path) from the pristine backup tree over the project. Only model files
+     * are touched — never source files.
+     */
+    private static void restoreModelFilesFromBackup(String backupDir, String projectDir) {
+        try {
+            java.nio.file.Path backup = Paths.get(backupDir);
+            java.nio.file.Path target = Paths.get(projectDir);
+            for (String ideaFile : new String[]{".idea/modules.xml", ".idea/misc.xml"}) {
+                java.nio.file.Path src = backup.resolve(ideaFile);
+                if (Files.exists(src)) {
+                    Files.createDirectories(target.resolve(ideaFile).getParent());
+                    Files.copy(src, target.resolve(ideaFile),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+            final int[] copied = {0};
+            Files.walk(backup)
+                    .filter(p -> p.toString().endsWith(".iml"))
+                    .forEach(p -> {
+                        try {
+                            java.nio.file.Path rel = backup.relativize(p);
+                            Files.copy(p, target.resolve(rel),
+                                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                            copied[0]++;
+                        } catch (IOException ignored) {
+                        }
+                    });
+            System.out.println("-> Model heal: restored " + copied[0] + " imls + .idea metadata from backup");
+        } catch (Throwable t) {
+            System.out.println("-> Model heal: backup restore failed: " + t);
+        }
+    }
+
+    public static void waitForWorkspaceSettle(Project project) {
+        long deadline = System.currentTimeMillis() + 120_000L;
+        int stable = 0;
+        int prevModules = -1;
+        int prevRoots = -1;
+        boolean healTried = false;
+        while (stable < 3 && System.currentTimeMillis() < deadline) {
+            int m = ModuleManager.getInstance(project).getModules().length;
+            // A module-less project is never "settled" — it is the failure
+            // state itself. Attempt one self-heal (forced JPS reload from the
+            // intact on-disk files) before waiting any further.
+            if (m == 0 && !healTried) {
+                healTried = true;
+                healProjectModel(project);
+                m = ModuleManager.getInstance(project).getModules().length;
+            }
+            int r = com.intellij.openapi.roots.ProjectRootManager.getInstance(project).getContentRoots().length;
+            if (m > 0 && m == prevModules && r == prevRoots) {
+                stable++;
+            } else {
+                stable = 0;
+            }
+            prevModules = m;
+            prevRoots = r;
+            if (ApplicationManager.getApplication().isDispatchThread()) {
+                IdeEventQueue.getInstance().flushQueue();
+            }
+            try {
+                Thread.sleep(300);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        dumbServiceHandler(project);
+    }
+
+    /*
      * The JPS workspace model loads asynchronously after openOrImport and is
      * applied on the EDT at non-modal modality. The pipeline monopolizes the
      * EDT and later runs under modal contexts (progress, dumb-queue
