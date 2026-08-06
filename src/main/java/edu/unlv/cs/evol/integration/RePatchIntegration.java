@@ -433,11 +433,16 @@ public class RePatchIntegration {
 //        String intelliMergePath = resultDir + "/intelliMerge";
 
 
-        // Remove unmerged and non-java files from Git and RePatch results to save space
-        // Use project path
-        EvaluationUtils.removeUnmergedAndNonJavaFiles(project.getBasePath());
-
+        // Remove unmerged and non-java files from Git and RePatch results to
+        // save space — on the evidence COPY, never the live clone. The trim
+        // used to run on the clone before the copy; the clone's *.iml files
+        // are untracked AND gitignored, so reset() could not restore them and
+        // every conflict scenario permanently destroyed the on-disk project
+        // model (the queued JPS reload then applied the resulting empty
+        // module set). The copy is trimmed by the same rule, so evidence
+        // trees are unchanged.
         Utils.saveContent(project, gitMergePath);
+        EvaluationUtils.removeUnmergedAndNonJavaFiles(gitMergePath);
         gitUtils.reset();
 
 
@@ -448,8 +453,8 @@ public class RePatchIntegration {
         Pair<ArrayList<Pair<RefactoringObject, RefactoringObject>>, Long> refMergeConflictsAndRuntime =
                 runRefMerge(project, repo, rightParent, leftParent, baseCommit, mergeCommit, conflictingFiles);
 
-        EvaluationUtils.removeUnmergedAndNonJavaFiles(project.getBasePath());
         Utils.saveContent(project, refMergePath);
+        EvaluationUtils.removeUnmergedAndNonJavaFiles(refMergePath);
         DumbService.getInstance(project).completeJustSubmittedTasks();
 
 
