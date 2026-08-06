@@ -187,14 +187,41 @@ public class RePatchIntegration {
                 // Only the merge commit SHA is load-bearing (it is the commit we
                 // cherry-pick). A missing/deleted PR throws (404) from the fetch,
                 // an unmerged one has no merge SHA; both skip the patch instead
-                // of aborting the whole project run.
-                GHPullRequest mergedPullRequest;
-                try {
-                    mergedPullRequest = new GitHubUtils().getMergeCommitSha(values[0], Integer.valueOf(values[2]));
-                } catch (IOException e) {
-                    System.out.println("-> SKIP PR " + values[2] + ": not found on GitHub (" + e.getMessage() + ")");
-                    patch.setDone();
-                    patch.saveIt();
+                // of aborting the whole project run. Transient network failures
+                // also surface as IOException and must NOT be recorded as
+                // missing PRs (a Connection-refused blip once skipped a valid
+                // patch as "not found") — retry those a few times, then skip
+                // with an honest message and leave the patch NOT done so a
+                // re-run picks it up.
+                GHPullRequest mergedPullRequest = null;
+                boolean prFetchFailed = false;
+                for (int attempt = 1; ; attempt++) {
+                    try {
+                        mergedPullRequest = new GitHubUtils().getMergeCommitSha(values[0], Integer.valueOf(values[2]));
+                        break;
+                    } catch (org.kohsuke.github.GHFileNotFoundException e) {
+                        System.out.println("-> SKIP PR " + values[2] + ": not found on GitHub (" + e.getMessage() + ")");
+                        patch.setDone();
+                        patch.saveIt();
+                        prFetchFailed = true;
+                        break;
+                    } catch (IOException e) {
+                        if (attempt >= 3) {
+                            System.out.println("-> SKIP PR " + values[2] + ": GitHub unreachable after "
+                                    + attempt + " attempts (" + e.getMessage() + "); leaving patch pending");
+                            prFetchFailed = true;
+                            break;
+                        }
+                        System.out.println("-> PR " + values[2] + " fetch attempt " + attempt
+                                + " failed (" + e.getMessage() + "); retrying");
+                        try {
+                            Thread.sleep(5_000L * attempt);
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
+                }
+                if (prFetchFailed) {
                     continue;
                 }
                 if (mergedPullRequest == null || !mergedPullRequest.isMerged()
