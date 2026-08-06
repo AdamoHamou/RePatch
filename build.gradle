@@ -129,6 +129,12 @@ tasks.named('runIde').configure {
             jvmArgs("-D${key}=${v}")
         }
     }
+    // Dataset selector (SPEC-11): -PdataSet=sample|complete picks which
+    // resource directory (sample_data / complete_data) the pipeline reads.
+    // Exposed to the plugin as repatch.dataSet; defaults to sample.
+    if (project.hasProperty('dataSet')) {
+        jvmArgs("-Drepatch.dataSet=${project.findProperty('dataSet')}")
+    }
     if (project.hasProperty("mode")) {
         Object x = project.findProperty("mode")
         Object y = project.findProperty("dataPath")

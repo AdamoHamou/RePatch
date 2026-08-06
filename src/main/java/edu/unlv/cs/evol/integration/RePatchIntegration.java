@@ -55,8 +55,23 @@ public class RePatchIntegration {
      * Use the given git repository to evaluate IntelliMerge, RePatch, and Git.
      * Use the give git repositories (mainline and variant fork) to integrate patches with RePatch and Git
      */
+    /*
+     * Dataset selector (SPEC-11): -PdataSet=sample|complete on the gradle
+     * command line reaches the IDE JVM as -Drepatch.dataSet via the existing
+     * repatch.* property forwarding in build.gradle. Default preserves the
+     * historical sample_data behavior.
+     */
+    static String dataSetDir() {
+        String dataSet = System.getProperty("repatch.dataSet", "sample");
+        if (!dataSet.equals("sample") && !dataSet.equals("complete")) {
+            System.out.println("-> Unknown repatch.dataSet '" + dataSet + "'; using 'sample'");
+            dataSet = "sample";
+        }
+        return "/" + dataSet + "_data";
+    }
+
     public void runComparison(String path, String evaluationProject) throws Exception {
-        URL url = IntegrationPipeline.class.getResource("/sample_data/repatch_integration_projects");
+        URL url = IntegrationPipeline.class.getResource(dataSetDir() + "/repatch_integration_projects");
         assert url != null;
         InputStream inputStream = url.openStream();
         ArrayList<String> lines = Utils.getLinesFromInputStream(inputStream);
@@ -160,7 +175,7 @@ public class RePatchIntegration {
 //
 //    }
     private void evaluateProject(GitRepository repo, Project proj, String projectName) throws Exception {
-        URL url = IntegrationPipeline.class.getResource("/sample_data/repatch_integration_patches");
+        URL url = IntegrationPipeline.class.getResource(dataSetDir() + "/repatch_integration_patches");
 
         InputStream inputStream = url.openStream();
         ArrayList<String> lines = Utils.getLinesFromInputStream(inputStream);

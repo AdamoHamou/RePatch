@@ -93,7 +93,7 @@ RePatch/
 ├── build.gradle                     # Gradle build script
 ├── settings.gradle                  # Gradle project settings
 ├── gradle.properties                # Build configuration properties
-├── github-autho.properties          # GitHub access credentials (credentials excluded from Git)
+├── src/main/resources/github-oauth.properties.template  # GitHub token template (real file git-ignored)
 ├── database.properties              # DB config for persisting conflict metrics
 ├── .gitignore                       # Git ignore rules
 ├── .github
@@ -199,9 +199,9 @@ Clone this project (`git clone https://github.com/unlv-evol/Repatch.git`) and op
 
 **Follow the steps below to run the experiment:**
 
-1. Create a GitHub token and add it to `github-oauth.properties`. This is optional if you are running the tool using only the [sample data](src/main/resources/sample_data/) provided.
+1. Create a GitHub token and add it to `src/main/resources/github-oauth.properties` (copy `github-oauth.properties.template` in the same directory). This is optional if you are running the tool using only the [sample data](src/main/resources/sample_data/) provided — without a token the tool connects anonymously with GitHub's lower rate limit.
    
-2. Edit the configuration tasks in the IntelliJ IDE under `Run | Edit Configurations` (more information can be found [here](https://www.jetbrains.com/help/idea/run-debug-configuration.html#create-permanent)) to have `:runIde` and include set `-Pmode=` to `integration` and `-PdataPath=` to `repatch-integration-projects`. Then, set `-PevaluationProject=` to the project (target variant) that you want to evaluate on. For our case, it would look like `-PevaluationProject=kafka` since we want to test run integration on `linkedin/kafka`.
+2. Edit the configuration tasks in the IntelliJ IDE under `Run | Edit Configurations` (more information can be found [here](https://www.jetbrains.com/help/idea/run-debug-configuration.html#create-permanent)) to have `:runIde` and include set `-Pmode=` to `integration` and `-PdataPath=` to `repatch-integration-projects` (the directory under your home where evaluation clones are checked out). Then, set `-PevaluationProject=` to the project (target variant) that you want to evaluate on. For our case, it would look like `-PevaluationProject=kafka` since we want to test run integration on `linkedin/kafka`. Which scenario list is used is controlled separately by `-PdataSet=sample|complete` (defaults to `sample` = the bundled [sample data](src/main/resources/sample_data/); `complete` reads [complete_data](src/main/resources/complete_data/)). Note that `-PdataPath` does **not** switch datasets — it only names the clone directory.
 ```
 -Pmode=integration -PdataPath=/repatch-integration-projects -PevaluationProject=kafka
 ```

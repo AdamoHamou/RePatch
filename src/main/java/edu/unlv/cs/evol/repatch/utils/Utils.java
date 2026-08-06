@@ -978,7 +978,8 @@ public class Utils {
         return lines;
     }
 
-    private boolean checkReplayRefactoring(RefactoringObject refactoring, List<Pair<Integer, Integer>> conflictingRegions) {
+    // Package-private for ReplayGeometryTest: pure region math, no PSI.
+    boolean checkReplayRefactoring(RefactoringObject refactoring, List<Pair<Integer, Integer>> conflictingRegions) {
         int refStartLine = refactoring.getStartLine();
         int refEndLine = refactoring.getEndLine();
         // Types without boundary support report 0/0; their edit surface is
