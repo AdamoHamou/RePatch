@@ -56,6 +56,9 @@ dependencies {
     intellijPlatform {
         intellijIdeaCommunity '2024.3.7'
         bundledPlugins 'Git4Idea', 'com.intellij.java'
+        // Headless PSI test fixtures (SPEC-12b round-trip tests).
+        testFramework org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform.INSTANCE
+        testFramework org.jetbrains.intellij.platform.gradle.TestFrameworkType.Plugin.Java.INSTANCE
     }
 
     implementation fileTree(dir: 'lib', include: ['*.jar'])
