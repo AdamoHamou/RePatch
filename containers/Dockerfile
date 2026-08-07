@@ -19,6 +19,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         mysql-client \
     && rm -rf /var/lib/apt/lists/*
 
+# JDK 11 serves two roles: the evaluation project's model pins
+# project-jdk-name="11" (.idea/misc.xml, kafka-era) and IntelliJ's SDK
+# detector auto-registers a JDK found under /usr/lib/jvm; and the
+# entrypoint's `gradle idea` model regeneration runs kafka's own
+# gradle, which predates JDK 17 support.
+COPY --from=eclipse-temurin:11-jdk-noble /opt/java/openjdk /usr/lib/jvm/temurin-11-jdk-amd64
+
 # Dedicated runtime user at uid 1000 (drop the stock ubuntu user that
 # occupies the uid in noble-based images). The workdir is created and
 # chowned explicitly: the legacy builder creates WORKDIR as root even
@@ -29,6 +36,12 @@ RUN userdel -r ubuntu 2>/dev/null || true; useradd -m -u 1000 repatch \
 USER repatch
 ENV HOME=/home/repatch
 WORKDIR /home/repatch/RePatch
+
+# git identity: the pipeline COMMITS (undo commits, evidence commits);
+# without an identity `git commit` refuses, HEAD silently stays at the
+# right commit, and every inversion is committed as a no-op (vacuous).
+RUN git config --global user.name "RePatch Container" \
+    && git config --global user.email "repatch@container.local"
 
 # RefactoringMiner 2.1.0 resolves from the local Maven repo (flat POM,
 # transitive=false — see build.gradle); bake it where mavenLocal() looks.

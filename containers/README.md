@@ -48,14 +48,21 @@ template:
 - **RefactoringMiner 2.1.0** as a flat local-Maven artifact (the build
   resolves it with `transitive = false`; Central's POM would drag six
   transitives onto the classpath).
-- **The 43-module JPS project model** for the kafka clone
-  (`assets/kafka-model-overlay.tar.gz`: `.idea/` + 43 `*.iml`). The
-  evaluation clone must have a real project model or every PSI lookup
-  silently fails; the overlay is applied to the template at provisioning
-  time and also serves as `-Drepatch.modelBackupDir` (the model self-heal
-  backstop). To regenerate it from scratch: run `gradle idea` on the kafka
-  clone with an init script containing `allprojects { apply plugin: 'idea' }`,
-  then tar `.idea` and all `*.iml` files.
+- **JDK 11 alongside JDK 17**: the evaluation project's model pins project
+  SDK "11" (kafka-era); IntelliJ auto-registers the baked JDK from
+  `/usr/lib/jvm`, and kafka's own gradle (used at provisioning) predates
+  JDK 17 support.
+- **A git identity** — the pipeline creates commits (undo commits); without
+  `user.name`/`user.email`, `git commit` silently refuses and every
+  inversion degrades to a no-op.
+- **The `.idea` project metadata** for the kafka clone
+  (`assets/kafka-model-overlay.tar.gz`: `modules.xml` naming the 43
+  modules, `misc.xml` pinning SDK 11). The `*.iml` module files themselves
+  are REGENERATED at provisioning time with kafka's own
+  `gradle idea` (init script `allprojects { apply plugin: 'idea' }`) so
+  their library jar paths point at this container's dependency cache —
+  baked imls from another machine reference jars that don't exist here,
+  and without resolvable libraries every inversion silently no-ops.
 
 ## Determinism
 

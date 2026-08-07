@@ -61,9 +61,29 @@ if [ ! -d "$TEMPLATE/.git" ]; then
   git clone "$RP_FORK_URL" "$TEMPLATE.partial" || { log "clone failed"; exit 5; }
   git -C "$TEMPLATE.partial" remote add kafka "$RP_MAINLINE_URL"
   git -C "$TEMPLATE.partial" fetch kafka || { log "mainline fetch failed"; exit 5; }
+  # Project-level .idea metadata (modules.xml naming the 43 modules,
+  # misc.xml pinning SDK "11").
   tar xzf "$HOME/assets/kafka-model-overlay.tar.gz" -C "$TEMPLATE.partial"
+  # Regenerate the *.iml module files IN PLACE with kafka's own gradle:
+  # the baked imls carry library jar paths from the machine that generated
+  # them; without resolvable library jars the IDE still indexes classes but
+  # method-signature resolution silently degrades and every inversion
+  # no-ops (vacuous). `gradle idea` (idea plugin injected into every
+  # subproject) rewrites them against this container's own dependency
+  # cache, which lives in the data volume so the paths stay valid for
+  # every later run. Kafka-era gradle needs JDK 11 (baked in the image).
+  echo "allprojects { apply plugin: 'idea' }" > "$DATA/inject-idea.gradle"
+  log "regenerating module model via gradle idea (downloads kafka deps once)"
+  ( cd "$TEMPLATE.partial" && \
+    JAVA_HOME=/usr/lib/jvm/temurin-11-jdk-amd64 \
+    GRADLE_USER_HOME="$DATA/gradle-kafka" \
+    ./gradlew --no-daemon --init-script "$DATA/inject-idea.gradle" idea ) \
+    || { log "gradle idea failed — the model would resolve no libraries; aborting"; exit 6; }
+  rm -f "$TEMPLATE.partial"/*.ipr "$TEMPLATE.partial"/*.iws
+  IMLS=$(find "$TEMPLATE.partial" -name '*.iml' -not -path '*/.git/*' | wc -l)
+  [ "$IMLS" -ge 43 ] || { log "expected >=43 imls, got $IMLS; aborting"; exit 6; }
   mv "$TEMPLATE.partial" "$TEMPLATE"
-  log "template ready: HEAD=$(git -C "$TEMPLATE" rev-parse --short HEAD), $(find "$TEMPLATE" -maxdepth 2 -name '*.iml' -not -path '*/.git/*' | wc -l)+ imls at depth<=2"
+  log "template ready: HEAD=$(git -C "$TEMPLATE" rev-parse --short HEAD), $IMLS imls"
 else
   log "template cached: HEAD=$(git -C "$TEMPLATE" rev-parse --short HEAD)"
 fi
@@ -129,13 +149,15 @@ esac
 EXPECTED=$(grep -c . "$PATCH_FILE")
 log "launching pipeline ($EXPECTED patches, timeout ${RP_TIMEOUT}s)"
 
+RUNLOG="$HOME/results/run-$RP_DB.log"
+mkdir -p "$HOME/results"
 JDBC_USER="$JDBC_USER" JDBC_PASSWORD="$JDBC_PASSWORD" \
 JDBC_URL="jdbc:mysql://$DB_HOST/$RP_DB?serverTimezone=UTC" \
 JDBC_URL_WITHOUT_DATABASE="jdbc:mysql://$DB_HOST?serverTimezone=UTC" \
   ./gradlew --no-daemon runIde -Pmode=integration -PdataPath="$DATA_REL" \
     -PevaluationProject=linkedin/kafka \
     "${GRADLE_DATASET_ARGS[@]}" \
-    -Drepatch.modelBackupDir="$TEMPLATE" &
+    -Drepatch.modelBackupDir="$TEMPLATE" > >(tee "$RUNLOG") 2>&1 &
 GRADLE_PID=$!
 
 RC=0
@@ -164,6 +186,18 @@ while :; do
   fi
   sleep 10
 done
+
+# ---------------------------------------------------------------- run health
+# Vacuous inversions mean the refactoring engine silently no-oped and the
+# run degraded to a plain git cherry-pick — verdicts still complete, so
+# surface it loudly instead of letting it pass as success.
+VACUOUS=$(grep -c "Vacuous inversion" "$RUNLOG" 2>/dev/null)
+VACUOUS=${VACUOUS:-0}
+if [ "${VACUOUS:-0}" -gt 0 ]; then
+  echo
+  log "WARNING: $VACUOUS vacuous-inversion event(s) — RePatch degraded to plain cherry-pick for those scenarios (see $RUNLOG)"
+  RC=$(( RC == 0 ? 42 : RC ))
+fi
 
 # ------------------------------------------------------------------- verdicts
 echo
