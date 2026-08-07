@@ -4,6 +4,14 @@ Headless, reproducible runs of the RePatch integration pipeline
 (IntelliJ 2024.3.7 / JDK 17 / MySQL 8), mirroring how the original paper
 artifact shipped as a container.
 
+## Requirements
+
+- Docker (Linux) or Docker Desktop (Windows/macOS; WSL2 backend on Windows).
+- ~20 GB free disk (5.4 GB image + build layers + kafka clone and
+  dependency caches in volumes) and ~10 GB RAM available to Docker
+  (on Windows, set this in Docker Desktop → Settings → Resources, or
+  `.wslconfig`).
+
 ## Quick start
 
 ```bash
@@ -16,6 +24,18 @@ The first run additionally provisions the kafka evaluation clone into a
 named volume (~500 MB download); every later run starts from that cache.
 Verdicts are printed at the end of each run and persist in the MySQL
 volume; merged result trees land in the `results` volume.
+
+### Windows notes
+
+- Clone normally — `.gitattributes` pins the shell scripts to LF so the
+  image builds correctly regardless of `core.autocrlf`.
+- The `VAR=value docker compose run ...` syntax above is bash-only. Use
+  the portable `-e` form instead, which works in PowerShell and cmd too:
+
+```powershell
+docker compose run --rm -e RP_PRS=16954 headless
+docker compose run --rm -e RP_GOLDEN_CHECK=1 headless
+```
 
 ## Run modes
 
