@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+#
+# RePatch container CLI — the interactive front door to the evaluation
+# pipeline. Run `repatch help` for the command list.
+set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/repatch-lib.sh"
+
+# Resolve which run database a browsing command should look at:
+# explicit argument wins, else the most recent run.
+resolve_db() {
+  local db="${1:-}"
+  if [ -z "$db" ] && [ -f "$LAST_RUN_FILE" ]; then
+    db=$(cat "$LAST_RUN_FILE")
+  fi
+  [ -n "$db" ] || { log "no run database yet — do a 'repatch run' first"; return 1; }
+  echo "$db"
+}
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+  run)
+    PRS=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --dataset)      RP_DATASET="$2"; shift 2 ;;
+        --db)           RP_DB="$2"; shift 2 ;;
+        --keep-db)      RP_KEEP_DB=1; shift ;;
+        --timeout)      RP_TIMEOUT="$2"; shift 2 ;;
+        --golden-check) RP_GOLDEN_CHECK=1; shift ;;
+        --fork)         RP_FORK_URL="$2"; shift 2 ;;
+        --mainline)     RP_MAINLINE_URL="$2"; shift 2 ;;
+        -*)             log "unknown flag: $1 (see 'repatch help')"; exit 2 ;;
+        *)
+          # PR numbers, space- and/or comma-separated
+          for p in ${1//,/ }; do
+            [[ "$p" =~ ^[0-9]+$ ]] || { log "not a PR number: $p"; exit 2; }
+            PRS+=("$p")
+          done
+          shift ;;
+      esac
+    done
+    if [ ${#PRS[@]} -gt 0 ]; then
+      RP_PRS=$(IFS=,; echo "${PRS[*]}")
+    fi
+    start_mysql || exit $?
+    run_pipeline
+    exit $?
+    ;;
+
+  verdicts)
+    db=$(resolve_db "${1:-}") || exit 1
+    start_mysql || exit $?
+    print_verdicts "$db"
+    ;;
+
+  runs)
+    start_mysql || exit $?
+    printf "%-45s %s\n" "DATABASE" "PATCHES DONE"
+    for db in $("${MY[@]}" -N -e "SHOW DATABASES LIKE 'repatch%'" 2>/dev/null); do
+      done_n=$("${MY[@]}" -N -e "SELECT CONCAT(SUM(is_done=1),'/',COUNT(*)) FROM patch" "$db" 2>/dev/null)
+      printf "%-45s %s\n" "$db" "${done_n:-–}"
+    done
+    ;;
+
+  log)
+    db=$(resolve_db "${1:-}") || exit 1
+    f="$RESULTS/run-$db.log"
+    [ -f "$f" ] || { log "no log at $f"; exit 1; }
+    if [ -t 1 ]; then less "$f"; else cat "$f"; fi
+    ;;
+
+  results)
+    # repatch results [PR] [db] — result trees are written per
+    # merge_commit id ("commitN" = that row's id in the run database),
+    # so map the PR number through the database.
+    pr="${1:-}"
+    if [ -z "$pr" ]; then
+      log "contents of $RESULTS:"
+      ls -lh "$RESULTS" 2>/dev/null
+      exit 0
+    fi
+    [[ "$pr" =~ ^[0-9]+$ ]] || { log "not a PR number: $pr"; exit 2; }
+    db=$(resolve_db "${2:-}") || exit 1
+    start_mysql || exit $?
+    ids=$("${MY[@]}" -N -e "SELECT mc.id FROM merge_commit mc
+                            JOIN patch p ON mc.patch_id = p.id
+                            WHERE p.number = $pr" "$db" 2>/dev/null)
+    if [ -z "$ids" ]; then
+      log "PR $pr has no merge_commit rows in $db (clean cherry-pick, or not in that run)"
+      exit 1
+    fi
+    hit=0
+    for id in $ids; do
+      d="$RESULTS/kafka/commit$id"
+      if [ -d "$d" ]; then
+        hit=1
+        echo "$d"
+        find "$d" -maxdepth 1 -mindepth 1 -type d | sed 's/^/  /'
+      fi
+    done
+    if [ "$hit" = 1 ]; then
+      echo
+      log "each tree is the merged working copy that run produced;"
+      log "conflict markers (<<<<<<<) are left in place where merges conflicted."
+      log "NOTE: trees are keyed by merge_commit id within a run database —"
+      log "a later run reusing the same id overwrites them."
+    else
+      log "PR $pr maps to commit id(s) [$ids] in $db, but no tree exists under $RESULTS/kafka/"
+      log "(the trees were overwritten by a later run)"
+    fi
+    ;;
+
+  sql)
+    start_mysql || exit $?
+    exec "${MY[@]}" "$@"
+    ;;
+
+  status)
+    echo "-- MySQL:"
+    if mysql_up; then
+      echo "   up ($DB_HOST, datadir $MYSQL_DATA)"
+    else
+      echo "   down (starts automatically with any repatch command)"
+    fi
+    echo "-- Evaluation template:"
+    if [ -d "$TEMPLATE/.git" ]; then
+      imls=$(find "$TEMPLATE" -name '*.iml' -not -path '*/.git/*' 2>/dev/null | wc -l)
+      echo "   provisioned: HEAD=$(git -C "$TEMPLATE" rev-parse --short HEAD), $imls module files"
+    else
+      echo "   not yet provisioned (first 'repatch run' clones ~500 MB)"
+    fi
+    echo "-- Volumes:"
+    du -sh "$DATA" "$RESULTS" 2>/dev/null | sed 's/^/   /'
+    if mysql_up; then
+      n=$("${MY[@]}" -N -e "SHOW DATABASES LIKE 'repatch%'" 2>/dev/null | wc -l)
+      echo "-- Run databases: $n (list with 'repatch runs')"
+    fi
+    ;;
+
+  help|--help|-h)
+    banner
+    ;;
+
+  *)
+    log "unknown command: $cmd"
+    banner
+    exit 2
+    ;;
+esac

@@ -1,4 +1,6 @@
-# RePatch 2.0 — headless evaluation container.
+# RePatch 2.0 — headless evaluation container (all-in-one: the pipeline,
+# IntelliJ, and MySQL live in this single image; `docker run -it` drops
+# into an interactive shell with the `repatch` CLI).
 #
 # Build from the REPO ROOT (the build context must be the repository, not
 # this directory):
@@ -13,11 +15,14 @@
 FROM eclipse-temurin:17-jdk-noble
 
 ARG DEBIAN_FRONTEND=noninteractive
+# mysql-server runs INSIDE this container (no sidecar); its packaged
+# datadir is dropped — the real one is initialized in the data volume on
+# first boot so databases persist across containers.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git ca-certificates curl unzip tini \
+        git ca-certificates curl unzip tini less \
         xvfb libfreetype6 fontconfig fonts-dejavu-core \
-        mysql-client \
-    && rm -rf /var/lib/apt/lists/*
+        mysql-server mysql-client \
+    && rm -rf /var/lib/apt/lists/* /var/lib/mysql
 
 # JDK 11 serves two roles: the evaluation project's model pins
 # project-jdk-name="11" (.idea/misc.xml, kafka-era) and IntelliJ's SDK
@@ -35,6 +40,7 @@ RUN userdel -r ubuntu 2>/dev/null || true; useradd -m -u 1000 repatch \
     && chown -R repatch:repatch /home/repatch
 USER repatch
 ENV HOME=/home/repatch
+ENV PATH=/home/repatch/bin:$PATH
 WORKDIR /home/repatch/RePatch
 
 # git identity: the pipeline COMMITS (undo commits, evidence commits);
@@ -67,6 +73,8 @@ RUN ./gradlew --no-daemon compileJava compileTestJava; rc=$?; rm -rf /tmp/* 2>/d
 # (.idea + *.iml overlay, regenerable via `gradle idea` — see README).
 COPY --chown=repatch:repatch containers/assets/kafka-model-overlay.tar.gz /home/repatch/assets/
 COPY --chown=repatch:repatch containers/entrypoint.sh /home/repatch/entrypoint.sh
+COPY --chown=repatch:repatch containers/bin/ /home/repatch/bin/
+RUN chmod +x /home/repatch/entrypoint.sh /home/repatch/bin/repatch
 
 # Clone/template cache and results are volumes (see docker-compose.yml).
 # The mountpoints must pre-exist owned by the runtime user, or Docker

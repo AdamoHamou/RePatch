@@ -1,70 +1,94 @@
 # RePatch 2.0 — containerized evaluation
 
-Headless, reproducible runs of the RePatch integration pipeline
-(IntelliJ 2024.3.7 / JDK 17 / MySQL 8), mirroring how the original paper
-artifact shipped as a container.
+One self-contained image: the RePatch pipeline (IntelliJ 2024.3.7 /
+JDK 17), MySQL 8, and an interactive `repatch` CLI — running headlessly
+on Ubuntu 24.04, so it works the same on virtually any machine with
+Docker. No sidecar containers, no compose networking: start it, get a
+shell, run evaluations.
 
 ## Requirements
 
-- Docker (Linux) or Docker Desktop (Windows/macOS; WSL2 backend on Windows).
-- ~20 GB free disk (5.4 GB image + build layers + kafka clone and
-  dependency caches in volumes) and ~10 GB RAM available to Docker
-  (on Windows, set this in Docker Desktop → Settings → Resources, or
-  `.wslconfig`).
+- Docker (Linux) or Docker Desktop (Windows/macOS; WSL2 backend on
+  Windows).
+- ~20 GB free disk (5.5 GB image + build layers + kafka clone,
+  dependency caches, and MySQL data in a volume) and ~10 GB RAM
+  available to Docker (on Windows, set this in Docker Desktop →
+  Settings → Resources, or `.wslconfig`).
 
 ## Quick start
 
 ```bash
-cd containers
-docker compose build                 # one-time: bakes the IDE + all deps (~10 min, large image)
-docker compose run --rm headless     # golden 5-patch sample run end-to-end
+# from the repository root
+docker build -f containers/Dockerfile -t repatch-headless .
+
+docker run -it --rm \
+  -v repatch-data:/home/repatch/data \
+  -v repatch-results:/home/repatch/results \
+  --memory 10g --shm-size 1g \
+  repatch-headless
 ```
 
-The first run additionally provisions the kafka evaluation clone into a
-named volume (~500 MB download); every later run starts from that cache.
-Verdicts are printed at the end of each run and persist in the MySQL
-volume; merged result trees land in the `results` volume.
+That drops you into a shell inside the container with MySQL already
+running locally. From there:
+
+```
+repatch run                    # golden 5-patch sample set
+repatch run 16954              # one kafka PR (or several: 12363 15889)
+repatch run --dataset complete # the full scenario list
+repatch run --golden-check     # sample set + diff vs the golden baseline
+repatch runs                   # list past run databases
+repatch verdicts [db]          # verdict table of a run (default: latest)
+repatch log [db]               # page through a run's pipeline log
+repatch results [PR]           # locate the merged result trees
+repatch sql [db]               # open a mysql shell on the run data
+repatch status                 # provisioning / health check
+```
+
+The first `repatch run` provisions the kafka evaluation clone into the
+data volume (one-time ~500 MB download + dependency resolution); every
+later run starts from that cache. Each run gets its own database
+(`repatch_pr16954`, `repatch_sample`, ... — override with `--db NAME`,
+resume one with `--keep-db`), so results accumulate and stay browsable
+across sessions: databases, clone, and caches all live in the
+`repatch-data` volume, merged result trees and logs in
+`repatch-results`. Type `exit` to leave; MySQL shuts down cleanly.
+
+### Compose (optional convenience)
+
+```bash
+cd containers
+docker compose build
+docker compose run --rm headless                     # interactive shell
+docker compose run --rm headless repatch run 16954   # one-shot command
+```
+
+### Non-interactive / CI
+
+Any arguments after the image name are executed as-is (MySQL is started
+first), and running with **no TTY and no arguments** performs one
+default sample run — so the old one-shot workflow still works:
+
+```bash
+docker run --rm -v repatch-data:/home/repatch/data repatch-headless \
+  repatch run --golden-check          # exit code ≠ 0 on baseline mismatch
+```
 
 ### Windows notes
 
 - Clone normally — `.gitattributes` pins the shell scripts to LF so the
   image builds correctly regardless of `core.autocrlf`.
-- The `VAR=value docker compose run ...` syntax above is bash-only. Use
-  the portable `-e` form instead, which works in PowerShell and cmd too:
-
-```powershell
-docker compose run --rm -e RP_PRS=16954 headless
-docker compose run --rm -e RP_GOLDEN_CHECK=1 headless
-```
-
-## Run modes
-
-| Command | What it does |
-|---|---|
-| `docker compose run --rm headless` | the committed 5-patch sample set |
-| `RP_GOLDEN_CHECK=1 docker compose run --rm headless` | sample set + diff against the committed golden baseline (exit ≠ 0 on mismatch) |
-| `RP_PRS=16954 docker compose run --rm headless` | one specific kafka PR |
-| `RP_PRS=12363,15889 docker compose run --rm headless` | several PRs, sequentially |
-| `RP_DATASET=complete docker compose run --rm headless` | the full complete_data scenario list |
-
-Other knobs (see `entrypoint.sh` header for the full contract): `RP_DB`
-(per-run schema name), `RP_KEEP_DB=1` (resume instead of recreate),
-`RP_TIMEOUT` (seconds), `RP_FORK_URL` / `RP_MAINLINE_URL` (evaluation
-repo override).
-
-A GitHub token is optional (anonymous API access suffices for the sample
-runs). To use one, bind-mount a real properties file over the committed
-template:
-
-```yaml
-    volumes:
-      - ./github-oauth.properties:/home/repatch/RePatch/src/main/resources/github-oauth.properties:ro
-```
+- In Docker Desktop you can start the container from the GUI (it needs
+  nothing external anymore), but you won't get a terminal that way; use
+  the `docker run -it ...` command above from PowerShell, or open the
+  running container's **Exec** tab and type `bash`.
 
 ## What the image bakes in (and why)
 
 - **IntelliJ 2024.3.7 + Gradle + all dependencies** — downloaded at build
   time so runs don't start with a multi-gigabyte fetch.
+- **MySQL 8 server** — runs inside the container as the `repatch` user;
+  the data directory is initialized on first boot **in the data volume**,
+  so databases persist across containers and image rebuilds.
 - **RefactoringMiner 2.1.0** as a flat local-Maven artifact (the build
   resolves it with `transitive = false`; Central's POM would drag six
   transitives onto the classpath).
@@ -86,21 +110,25 @@ template:
 
 ## Determinism
 
-The entrypoint reproduces the run hygiene the digit-identical acceptance
+`repatch run` reproduces the run hygiene the digit-identical acceptance
 runs were validated with: the IDE sandbox `system` directories are wiped
 before each run (cold VFS/workspace caches), the working clone is
 recreated from the pristine template per run, and the pipeline itself
-pins the project model for the process lifetime. Memory floor: ~8 GB
-(the compose file sets `mem_limit: 10g`).
+pins the project model for the process lifetime. A run that logs any
+vacuous inversion (the engine silently no-oping down to a plain
+cherry-pick) exits 42 with a loud warning instead of passing as success.
+Memory floor: ~8 GB.
 
 ## Layout
 
 ```
 containers/
-├── Dockerfile            # eclipse-temurin:17-jdk-noble + baked caches
-├── docker-compose.yml    # mysql:8 sidecar + headless service + volumes
-├── entrypoint.sh         # provisioning, hygiene, launch, verdict report
-├── mysql-init/10-grants.sql
+├── Dockerfile            # eclipse-temurin:17-jdk-noble + MySQL + baked caches
+├── docker-compose.yml    # optional single-service convenience wrapper
+├── entrypoint.sh         # boots MySQL, then shell / command / CI run
+├── bin/
+│   ├── repatch           # the in-container CLI
+│   └── repatch-lib.sh    # shared run/provisioning/verdict logic
 └── assets/
     ├── kafka-model-overlay.tar.gz
     ├── refactoring-miner-2.1.0.jar

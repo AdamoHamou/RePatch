@@ -13,4 +13,3 @@ iso-runs
 containers/Dockerfile
 containers/docker-compose.yml
 containers/README.md
-containers/mysql-init
