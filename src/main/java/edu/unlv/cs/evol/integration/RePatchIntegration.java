@@ -722,6 +722,9 @@ public class RePatchIntegration {
             // With the model loaded, freeze it: VFS-event-driven JPS reloads
             // during checkout churn are what destroyed it mid-run.
             edu.unlv.cs.evol.repatch.utils.Utils.pinProjectModel(this.project);
+            // The declared project SDK resolves asynchronously; running
+            // ahead of it makes every inversion silently vacuous.
+            edu.unlv.cs.evol.repatch.utils.Utils.waitForProjectSdk(this.project);
 
         }
         catch(Exception e) {

@@ -410,6 +410,49 @@ public class Utils {
     }
 
     /*
+     * When misc.xml names a project SDK, the platform resolves it
+     * ASYNCHRONOUSLY after open (UnknownSdkTracker; observed taking >2
+     * minutes on a virgin config). Until it lands, java.* types do not
+     * resolve, so method-signature matching fails and every inversion
+     * silently no-ops (vacuous). A persistent sandbox config masks this —
+     * the SDK is already registered from earlier runs — which is why it
+     * only surfaced on fresh environments. Wait for the named SDK, then
+     * let its re-index finish. Projects that declare no SDK skip the wait.
+     */
+    public static void waitForProjectSdk(Project project) {
+        if (project == null) {
+            return;
+        }
+        com.intellij.openapi.roots.ProjectRootManager rootManager =
+                com.intellij.openapi.roots.ProjectRootManager.getInstance(project);
+        String wanted = rootManager.getProjectSdkName();
+        if (wanted == null) {
+            System.out.println("-> No project SDK declared; skipping SDK wait");
+            return;
+        }
+        long deadline = System.currentTimeMillis() + 300_000L;
+        while (rootManager.getProjectSdk() == null && System.currentTimeMillis() < deadline) {
+            if (ApplicationManager.getApplication().isDispatchThread()) {
+                IdeEventQueue.getInstance().flushQueue();
+            }
+            try {
+                Thread.sleep(250);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        com.intellij.openapi.projectRoots.Sdk sdk = rootManager.getProjectSdk();
+        if (sdk == null) {
+            System.out.println("-> WARNING: project SDK '" + wanted
+                    + "' unresolved after wait; type resolution may degrade (vacuous inversions)");
+        } else {
+            System.out.println("-> Project SDK resolved: " + sdk.getName() + " (" + sdk.getHomePath() + ")");
+        }
+        dumbServiceHandler(project);
+    }
+
+    /*
      * Use the file path to add the source root to the module if it is not already in the module.
      */
     public void addSourceRoot(String filePath, String filePackage) {

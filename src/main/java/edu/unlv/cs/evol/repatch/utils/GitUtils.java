@@ -50,6 +50,10 @@ public class GitUtils {
      * Perform git add -A and git commit
      */
     public String addAndCommit() {
+        List<String> dirty = Utils.runSystemCommandInDir(new File(repo.getRoot().getPath()),
+                "git", "status", "--porcelain");
+        System.out.println("-> addAndCommit: " + dirty.size() + " dirty paths on disk before add"
+                + (dirty.isEmpty() ? "" : " (first: " + dirty.get(0).trim() + ")"));
         add();
         commit();
         // The returned SHA must be exact: when the inversions changed nothing,
@@ -342,6 +346,12 @@ class DoGitCommit implements Runnable {
         // Add message to commit to clearly show it's RePatch step
         lineHandler.addParameters("-m", "RePatch");
         GitCommandResult result = Git.getInstance().runCommand(lineHandler);
+        if (result.getOutput().isEmpty()) {
+            // nothing-to-commit (e.g. a vacuous undo): no output line to
+            // parse — leave commit null instead of dying on get(0)
+            System.out.println("-> DoGitCommit: no output from git commit (nothing to commit?)");
+            return;
+        }
         String res = result.getOutput().get(0);
         // get the commit hash from the output message
         String commit;
