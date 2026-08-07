@@ -1,0 +1,60 @@
+# RePatch 2.0 — headless evaluation stack.
+#
+#   cd containers
+#   docker compose build                      # bakes IDE + deps (one-time, large)
+#   docker compose run --rm headless          # golden 5-patch sample run
+#   RP_PRS=16954 docker compose run --rm headless      # specific PR(s)
+#   RP_DATASET=complete docker compose run --rm headless
+#   RP_GOLDEN_CHECK=1 docker compose run --rm headless # sample + baseline diff
+#
+# First run provisions the kafka evaluation clone into the data volume
+# (~500 MB download, cached afterwards). Results land in the `results`
+# volume ($HOME/results inside the container); verdicts are also printed
+# and stored in the MySQL volume.
+
+services:
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_USER: repatch
+      MYSQL_PASSWORD: repatch
+      # The pipeline creates per-run schemas itself; the init grant below
+      # gives the repatch user the rights to do so.
+    volumes:
+      - db-data:/var/lib/mysql
+      - ./mysql-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h127.0.0.1", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  headless:
+    build:
+      context: ..
+      dockerfile: containers/Dockerfile
+    image: repatch-headless
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      DB_HOST: mysql
+      JDBC_USER: repatch
+      JDBC_PASSWORD: repatch
+      RP_DB: ${RP_DB:-repatch_run}
+      RP_DATASET: ${RP_DATASET:-sample}
+      RP_PRS: ${RP_PRS:-}
+      RP_GOLDEN_CHECK: ${RP_GOLDEN_CHECK:-0}
+      RP_TIMEOUT: ${RP_TIMEOUT:-5400}
+    volumes:
+      - repatch-data:/home/repatch/data
+      - results:/home/repatch/results
+    # IntelliJ + Gradle + kafka indexing want real memory; 8g is a safe floor.
+    mem_limit: 10g
+    shm_size: 1g
+
+volumes:
+  db-data:
+  repatch-data:
+  results:
