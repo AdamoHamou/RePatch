@@ -2,3 +2,5 @@
 # at build time, and a CRLF checkout (Windows git default) breaks them.
 *.sh text eol=lf
 gradlew text eol=lf
+# extensionless CLI script — *.sh doesn't catch it
+containers/bin/repatch text eol=lf

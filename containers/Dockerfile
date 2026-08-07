@@ -74,7 +74,10 @@ RUN ./gradlew --no-daemon compileJava compileTestJava; rc=$?; rm -rf /tmp/* 2>/d
 COPY --chown=repatch:repatch containers/assets/kafka-model-overlay.tar.gz /home/repatch/assets/
 COPY --chown=repatch:repatch containers/entrypoint.sh /home/repatch/entrypoint.sh
 COPY --chown=repatch:repatch containers/bin/ /home/repatch/bin/
-RUN chmod +x /home/repatch/entrypoint.sh /home/repatch/bin/repatch
+# Strip CR in case the build context came from a CRLF checkout (Windows
+# clones without the .gitattributes pin applied), then mark executable.
+RUN sed -i 's/\r$//' /home/repatch/entrypoint.sh /home/repatch/bin/* \
+    && chmod +x /home/repatch/entrypoint.sh /home/repatch/bin/repatch
 
 # Clone/template cache and results are volumes (see docker-compose.yml).
 # The mountpoints must pre-exist owned by the runtime user, or Docker
