@@ -138,7 +138,20 @@ print_verdicts() {
 #   RP_GOLDEN_CHECK=1  diff a default-sample run against the golden baseline
 run_pipeline() {
   RP_DATASET="${RP_DATASET:-sample}"
-  RP_TIMEOUT="${RP_TIMEOUT:-5400}"
+  # A complete run processes 393 PRs; give it a day by default.
+  if [ "$RP_DATASET" = "complete" ] && [ -z "${RP_PRS:-}" ]; then
+    RP_TIMEOUT="${RP_TIMEOUT:-86400}"
+  else
+    RP_TIMEOUT="${RP_TIMEOUT:-5400}"
+  fi
+
+  # GitHub token (strongly recommended for large runs: every patch fetches
+  # PR metadata, and anonymous access is limited to 60 requests/hour).
+  if [ -n "${RP_GITHUB_TOKEN:-}" ]; then
+    printf 'OAuthToken=%s\n' "$RP_GITHUB_TOKEN" \
+      > "$RP/src/main/resources/github-oauth.properties"
+    log "GitHub token installed from RP_GITHUB_TOKEN"
+  fi
   if [ -z "${RP_DB:-}" ]; then
     if [ -n "${RP_PRS:-}" ]; then
       RP_DB="repatch_pr${RP_PRS//,/_}"; RP_DB="${RP_DB:0:60}"
@@ -163,10 +176,11 @@ run_pipeline() {
   cp -a "$TEMPLATE" "$CLONE"
 
   local GRADLE_DATASET_ARGS=(-PdataSet="$RP_DATASET")
+  local SD="$RP/src/main/resources/sample_data"
   if [ -n "${RP_PRS:-}" ]; then
     # Scenario override: rewrite the sample_data resources (the
     # container's repo copy is disposable) and run in sample mode.
-    local SD="$RP/src/main/resources/sample_data" PR
+    local PR
     : > "$SD/repatch_integration_patches"
     IFS=',' read -ra PRLIST <<< "$RP_PRS"
     for PR in "${PRLIST[@]}"; do
@@ -175,6 +189,19 @@ run_pipeline() {
     echo "https://github.com/apache/kafka,https://github.com/linkedin/kafka" > "$SD/repatch_integration_projects"
     GRADLE_DATASET_ARGS=(-PdataSet=sample)
     log "scenario override: PRs [$RP_PRS]"
+  elif [ "$RP_DATASET" = "complete" ]; then
+    # The paper's complete list spans 6 project pairs, but only the kafka
+    # pair has a provisioned clone with a regenerated module model — the
+    # other projects would auto-clone model-less and every inversion would
+    # silently no-op (the degradation mode this image exists to prevent).
+    # Filter to the kafka mainline->fork scenarios (393 unique PRs, the
+    # paper's kafka evaluation) and run them through the sample machinery.
+    grep 'apache/kafka,https://github.com/linkedin/kafka' \
+      "$RP/src/main/resources/complete_data/repatch_integration_patches" \
+      > "$SD/repatch_integration_patches"
+    echo "https://github.com/apache/kafka,https://github.com/linkedin/kafka" > "$SD/repatch_integration_projects"
+    GRADLE_DATASET_ARGS=(-PdataSet=sample)
+    log "dataset: complete — $(grep -c . "$SD/repatch_integration_patches") kafka scenarios (non-kafka projects need model provisioning; not yet supported)"
   else
     log "dataset: $RP_DATASET"
   fi
@@ -201,12 +228,8 @@ run_pipeline() {
   # the IDE can hang on exit AFTER all work and DB writes are complete,
   # so we poll patch.is_done and shut the IDE down ourselves once
   # everything is recorded).
-  local PATCH_FILE
-  case "${RP_PRS:+prs}${RP_DATASET}" in
-    prs*)     PATCH_FILE="$RP/src/main/resources/sample_data/repatch_integration_patches" ;;
-    complete) PATCH_FILE="$RP/src/main/resources/complete_data/repatch_integration_patches" ;;
-    *)        PATCH_FILE="$RP/src/main/resources/sample_data/repatch_integration_patches" ;;
-  esac
+  # All three modes run through sample_data (PRS and complete rewrite it).
+  local PATCH_FILE="$SD/repatch_integration_patches"
   local EXPECTED
   EXPECTED=$(grep -c . "$PATCH_FILE")
   log "launching pipeline ($EXPECTED patches, timeout ${RP_TIMEOUT}s)"
@@ -282,7 +305,9 @@ banner() {
 
    repatch run                    golden 5-patch sample set
    repatch run 16954              one kafka PR (or a list)
-   repatch run --dataset complete full scenario list
+   repatch run --dataset complete the paper's 393 kafka PRs (~12-24h;
+                                  use --token <github-token>, resume
+                                  after interruption with --keep-db)
    repatch run --golden-check     sample + golden baseline diff
    repatch runs                   list past run databases
    repatch verdicts [db]          verdict table of a run

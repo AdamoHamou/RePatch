@@ -34,7 +34,7 @@ running locally. From there:
 ```
 repatch run                    # golden 5-patch sample set
 repatch run 16954              # one kafka PR (or several: 12363 15889)
-repatch run --dataset complete # the full scenario list
+repatch run --dataset complete # the paper's kafka evaluation (393 PRs)
 repatch run --golden-check     # sample set + diff vs the golden baseline
 repatch runs                   # list past run databases
 repatch verdicts [db]          # verdict table of a run (default: latest)
@@ -42,6 +42,31 @@ repatch log [db]               # page through a run's pipeline log
 repatch results [PR]           # locate the merged result trees
 repatch sql [db]               # open a mysql shell on the run data
 repatch status                 # provisioning / health check
+```
+
+### The full paper run
+
+`repatch run --dataset complete` runs the paper's kafka evaluation —
+the 393 unique apache→linkedin PR scenarios from `complete_data`
+(the paper's full list has 477 lines across 6 project pairs; the other
+projects need per-project IntelliJ model provisioning that isn't built
+yet, so they are filtered out rather than run in the silently-degraded
+no-model mode). Practical notes:
+
+- **Budget ~12–24 hours** (the default timeout for this mode is 24h)
+  and **~150 GB free disk**: every conflicting patch exports a merged
+  result tree of ~0.5–1 GB into the results volume.
+- **Use a GitHub token** (`--token <tok>` or `RP_GITHUB_TOKEN`): each
+  patch fetches PR metadata, and anonymous access (60 requests/hour)
+  will stall and eventually skip patches.
+- **Interrupted? Resume with** `repatch run --dataset complete --keep-db
+  --token <tok>` — completed merge scenarios are skipped.
+- A non-zero exit of 42 means at least one vacuous-inversion event was
+  detected; the verdicts still complete but check the run log.
+
+```powershell
+docker run -it --rm -v repatch-data:/home/repatch/data -v repatch-results:/home/repatch/results --memory 10g repatch-headless
+repatch run --dataset complete --token ghp_yourtoken
 ```
 
 The first `repatch run` provisions the kafka evaluation clone into the

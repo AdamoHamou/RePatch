@@ -31,6 +31,7 @@ case "$cmd" in
         --golden-check) RP_GOLDEN_CHECK=1; shift ;;
         --fork)         RP_FORK_URL="$2"; shift 2 ;;
         --mainline)     RP_MAINLINE_URL="$2"; shift 2 ;;
+        --token)        RP_GITHUB_TOKEN="$2"; shift 2 ;;
         -*)             log "unknown flag: $1 (see 'repatch help')"; exit 2 ;;
         *)
           # PR numbers, space- and/or comma-separated
