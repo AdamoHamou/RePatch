@@ -46,16 +46,33 @@ repatch status                 # provisioning / health check
 
 ### The full paper run
 
-`repatch run --dataset complete` runs the paper's kafka evaluation —
-the 393 unique apache→linkedin PR scenarios from `complete_data`
-(the paper's full list has 477 lines across 6 project pairs; the other
-projects need per-project IntelliJ model provisioning that isn't built
-yet, so they are filtered out rather than run in the silently-degraded
-no-model mode). Practical notes:
+`repatch run --dataset complete` runs the paper's evaluation:
+**467 of the 478 scenarios** in `complete_data`.
 
-- **Budget ~12–24 hours** (the default timeout for this mode is 24h)
+- **393 kafka scenarios** run with the provisioned clone and
+  regenerated module model — the honest engine, same condition as
+  every validated baseline.
+- **74 non-kafka scenarios** (DSpace ×54, bitcoinj ×12,
+  checker-framework ×5, javacc ×2, sqlite-jdbc ×1) run in
+  **paper-parity mode**: their repos are cloned at first use with a
+  minimal single-module `.idea` — equivalent to what the paper's
+  2020-era platform gave them. The refactoring engine may partially
+  no-op there; the run reports vacuous-inversion counts instead of
+  hiding them. Read those verdicts as paper-condition numbers, not
+  honest-engine numbers.
+- **11 scenarios are excluded** (reverse-direction kafka ×8,
+  eisop→typetools checker-framework ×3): both directions of the same
+  repository resolve to a single clone directory and patch filter, so
+  the second direction would silently run against the wrong
+  repository. Supporting them needs clone-naming changes in the
+  pipeline itself.
+
+Practical notes:
+
+- **Budget ~15–30 hours** (the default timeout for this mode is 48h)
   and **~150 GB free disk**: every conflicting patch exports a merged
-  result tree of ~0.5–1 GB into the results volume.
+  result tree (~0.5–1 GB for kafka-sized repos) into the results
+  volume; first use also downloads each non-kafka repo (~3 GB total).
 - **Use a GitHub token** (`--token <tok>` or `RP_GITHUB_TOKEN`): each
   patch fetches PR metadata, and anonymous access (60 requests/hour)
   will stall and eventually skip patches.

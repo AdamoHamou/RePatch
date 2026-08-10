@@ -107,25 +107,90 @@ ensure_template() {
   log "template ready: HEAD=$(git -C "$TEMPLATE" rev-parse --short HEAD), $imls imls"
 }
 
+# Provision the non-kafka evaluation clones for paper-parity complete
+# runs: clone the fork, add + fetch the mainline remote (cherry-picks
+# need its commits), and lay down a minimal .idea skeleton — a single
+# whole-repo module. Two reasons: headless 2024.3 refuses to open a
+# bare directory (MissingEnvironmentKeyException: project.open.type),
+# and a single default module is exactly what the paper's 2020-era
+# platform gave these projects, so parity is preserved.
+provision_aux_clones() {
+  local SPEC DIR FORK RNAME RURL
+  for SPEC in \
+    "ParserGeneratorCC|https://github.com/tulipcc/ParserGeneratorCC|javacc|https://github.com/javacc/javacc" \
+    "sqlite-jdbc-crypt|https://github.com/Willena/sqlite-jdbc-crypt|sqlite-jdbc|https://github.com/xerial/sqlite-jdbc" \
+    "bitcoinj|https://github.com/bisq-network/bitcoinj|bitcoinj|https://github.com/bitcoinj/bitcoinj" \
+    "dogecoinj-new|https://github.com/langerhans/dogecoinj-new|bitcoinj|https://github.com/bitcoinj/bitcoinj" \
+    "checker-framework|https://github.com/eisop/checker-framework|checker-framework|https://github.com/typetools/checker-framework" \
+    "clarin-dspace|https://github.com/ufal/clarin-dspace|DSpace|https://github.com/DSpace/DSpace" \
+    "DSpace|https://github.com/DSpace/DSpace|clarin-dspace|https://github.com/ufal/clarin-dspace" \
+  ; do
+    IFS='|' read -r DIR FORK RNAME RURL <<< "$SPEC"
+    local D="$CLONE_PARENT/$DIR"
+    if [ ! -d "$D/.git" ]; then
+      log "provisioning $DIR (one-time clone + mainline fetch)"
+      rm -rf "$D"
+      git clone "$FORK" "$D" \
+        || { log "ERROR: clone of $FORK failed — aborting before a partial run"; return 7; }
+      git -C "$D" remote add "$RNAME" "$RURL"
+      local T
+      for T in 1 2 3; do
+        git -C "$D" fetch "$RNAME" && break
+        [ "$T" = 3 ] && { log "ERROR: fetch of $RURL failed 3x — aborting"; return 7; }
+        sleep 10
+      done
+    fi
+    if [ ! -d "$D/.idea" ]; then
+      mkdir -p "$D/.idea"
+      cat > "$D/.idea/modules.xml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://\$PROJECT_DIR\$/$DIR.iml" filepath="\$PROJECT_DIR\$/$DIR.iml" />
+    </modules>
+  </component>
+</project>
+EOF
+      cat > "$D/$DIR.iml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="JAVA_MODULE" version="4">
+  <component name="NewModuleRootManager" inherit-compiler-output="true">
+    <exclude-output />
+    <content url="file://\$MODULE_DIR\$">
+      <excludeFolder url="file://\$MODULE_DIR\$/.git" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+</module>
+EOF
+      log "wrote minimal single-module .idea for $DIR"
+    fi
+  done
+}
+
 # Verdict tables for one run database.
 print_verdicts() {
   local db="$1"
   echo
   echo "==================== VERDICTS ($db) ===================="
   "${MY[@]}" -t -e "
-    SELECT p.number, mr.merge_tool,
+    SELECT SUBSTRING_INDEX(pj.fork_url,'/',-1) AS project, p.number, mr.merge_tool,
            CONCAT(mr.total_conflicting_files,'/',mr.total_conflicts,'/',mr.total_conflicting_loc) AS verdict
     FROM patch p
+    JOIN project pj ON p.project_id = pj.id
     JOIN merge_commit mc ON mc.patch_id = p.id
     JOIN merge_result mr ON mr.merge_commit_id = mc.id
-    ORDER BY p.number, mr.merge_tool;" "$db" 2>/dev/null
+    ORDER BY pj.id, p.number, mr.merge_tool;" "$db" 2>/dev/null
   "${MY[@]}" -t -e "
-    SELECT p.number, 'clean (no conflict)' AS note
+    SELECT SUBSTRING_INDEX(pj.fork_url,'/',-1) AS project, p.number, 'clean (no conflict)' AS note
     FROM patch p
+    JOIN project pj ON p.project_id = pj.id
     WHERE p.is_done = 1
       AND NOT EXISTS (SELECT 1 FROM merge_commit mc JOIN merge_result mr
                       ON mr.merge_commit_id = mc.id WHERE mc.patch_id = p.id)
-    ORDER BY p.number;" "$db" 2>/dev/null
+    ORDER BY pj.id, p.number;" "$db" 2>/dev/null
 }
 
 # One full pipeline run, parameterized by RP_* environment variables
@@ -138,9 +203,10 @@ print_verdicts() {
 #   RP_GOLDEN_CHECK=1  diff a default-sample run against the golden baseline
 run_pipeline() {
   RP_DATASET="${RP_DATASET:-sample}"
-  # A complete run processes 393 PRs; give it a day by default.
+  local PARITY=0 EVAL_PROJECT="linkedin/kafka"
+  # A complete run processes 467 scenarios; give it two days by default.
   if [ "$RP_DATASET" = "complete" ] && [ -z "${RP_PRS:-}" ]; then
-    RP_TIMEOUT="${RP_TIMEOUT:-86400}"
+    RP_TIMEOUT="${RP_TIMEOUT:-172800}"
   else
     RP_TIMEOUT="${RP_TIMEOUT:-5400}"
   fi
@@ -175,6 +241,20 @@ run_pipeline() {
   rm -rf "$CLONE"
   cp -a "$TEMPLATE" "$CLONE"
 
+  # Auxiliary clones (non-kafka projects auto-cloned by a previous
+  # complete run) persist in the volume; clear any leftover merge state
+  # so this run starts from clean checkouts.
+  local AUX
+  for AUX in "$CLONE_PARENT"/*/; do
+    AUX="${AUX%/}"
+    [ "$AUX" = "$CLONE" ] && continue
+    [ -d "$AUX/.git" ] || continue
+    git -C "$AUX" cherry-pick --abort >/dev/null 2>&1
+    git -C "$AUX" reset --hard -q >/dev/null 2>&1
+    git -C "$AUX" clean -qfd -e .idea -e '*.iml' >/dev/null 2>&1
+    log "reset auxiliary clone $(basename "$AUX")"
+  done
+
   local GRADLE_DATASET_ARGS=(-PdataSet="$RP_DATASET")
   local SD="$RP/src/main/resources/sample_data"
   if [ -n "${RP_PRS:-}" ]; then
@@ -190,20 +270,54 @@ run_pipeline() {
     GRADLE_DATASET_ARGS=(-PdataSet=sample)
     log "scenario override: PRs [$RP_PRS]"
   elif [ "$RP_DATASET" = "complete" ]; then
-    # The paper's complete list spans 6 project pairs, but only the kafka
-    # pair has a provisioned clone with a regenerated module model — the
-    # other projects would auto-clone model-less and every inversion would
-    # silently no-op (the degradation mode this image exists to prevent).
-    # Filter to the kafka mainline->fork scenarios (393 unique PRs, the
-    # paper's kafka evaluation) and run them through the sample machinery.
-    grep 'apache/kafka,https://github.com/linkedin/kafka' \
+    # The paper's complete list: 478 scenarios across 6 project pairs.
+    # kafka runs with the provisioned clone + regenerated module model
+    # (the honest engine). The other projects run in PAPER-PARITY mode:
+    # auto-cloned at first use, module-less — the same environment the
+    # paper artifact ran them in; the engine's refactoring machinery may
+    # partially no-op there, and the instrumentation reports it instead
+    # of hiding it. Two direction pairs are EXCLUDED (11 scenarios)
+    # because both directions of the same repo resolve to one clone
+    # directory / patch filter and the second direction would silently
+    # run against the wrong repository:
+    #   linkedin/kafka -> apache/kafka          (8; clone dir 'kafka' collides)
+    #   eisop -> typetools checker-framework    (3; both directions are 'checker-framework')
+    # (the Willena->xerial sqlite pattern below is defensive: that pair
+    # appears in the projects list but has no scenario lines today)
+    PARITY=1
+    grep -v \
+      -e '^https://github.com/linkedin/kafka,https://github.com/apache/kafka,' \
+      -e '^https://github.com/eisop/checker-framework,https://github.com/typetools/checker-framework,' \
+      -e '^https://github.com/Willena/sqlite-jdbc-crypt,https://github.com/xerial/sqlite-jdbc,' \
       "$RP/src/main/resources/complete_data/repatch_integration_patches" \
       > "$SD/repatch_integration_patches"
-    echo "https://github.com/apache/kafka,https://github.com/linkedin/kafka" > "$SD/repatch_integration_projects"
+    # Project order: small projects first (fast feedback), kafka last.
+    printf '%s\n' \
+      "https://github.com/javacc/javacc,https://github.com/tulipcc/ParserGeneratorCC" \
+      "https://github.com/xerial/sqlite-jdbc,https://github.com/Willena/sqlite-jdbc-crypt" \
+      "https://github.com/bitcoinj/bitcoinj,https://github.com/bisq-network/bitcoinj" \
+      "https://github.com/bitcoinj/bitcoinj,https://github.com/langerhans/dogecoinj-new" \
+      "https://github.com/typetools/checker-framework,https://github.com/eisop/checker-framework" \
+      "https://github.com/DSpace/DSpace,https://github.com/ufal/clarin-dspace" \
+      "https://github.com/ufal/clarin-dspace,https://github.com/DSpace/DSpace" \
+      "https://github.com/apache/kafka,https://github.com/linkedin/kafka" \
+      > "$SD/repatch_integration_projects"
+    # Sanity: every scenario's project pair must be in the projects file.
+    local MISSING
+    MISSING=$(cut -d, -f1,2 "$SD/repatch_integration_patches" | sort -u \
+              | grep -vxF -f "$SD/repatch_integration_projects" | head -3)
+    [ -n "$MISSING" ] && log "WARNING: scenario pairs missing from projects file: $MISSING"
     GRADLE_DATASET_ARGS=(-PdataSet=sample)
-    log "dataset: complete — $(grep -c . "$SD/repatch_integration_patches") kafka scenarios (non-kafka projects need model provisioning; not yet supported)"
+    EVAL_PROJECT="github.com"   # substring-matches every project line
+    log "dataset: complete — $(grep -c . "$SD/repatch_integration_patches") scenarios (393 kafka modeled + 74 non-kafka in paper-parity mode; 11 direction-colliding scenarios excluded)"
   else
     log "dataset: $RP_DATASET"
+  fi
+
+  # Paper-parity runs need the non-kafka clones (with their minimal
+  # .idea skeletons) in place BEFORE the pipeline reaches them.
+  if [ "$PARITY" = "1" ]; then
+    provision_aux_clones || return $?
   fi
 
   if [ "${RP_KEEP_DB:-0}" != "1" ]; then
@@ -231,7 +345,8 @@ run_pipeline() {
   # All three modes run through sample_data (PRS and complete rewrite it).
   local PATCH_FILE="$SD/repatch_integration_patches"
   local EXPECTED
-  EXPECTED=$(grep -c . "$PATCH_FILE")
+  # Distinct (fork, PR) pairs — duplicate lines collapse to one DB row.
+  EXPECTED=$(cut -d, -f2,3 "$PATCH_FILE" | sort -u | grep -c .)
   log "launching pipeline ($EXPECTED patches, timeout ${RP_TIMEOUT}s)"
 
   local RUNLOG="$RESULTS/run-$RP_DB.log"
@@ -240,7 +355,7 @@ run_pipeline() {
   JDBC_URL="jdbc:mysql://$DB_HOST/$RP_DB?serverTimezone=UTC" \
   JDBC_URL_WITHOUT_DATABASE="jdbc:mysql://$DB_HOST?serverTimezone=UTC" \
     ./gradlew --no-daemon runIde -Pmode=integration -PdataPath="$DATA_REL" \
-      -PevaluationProject=linkedin/kafka \
+      -PevaluationProject="$EVAL_PROJECT" \
       "${GRADLE_DATASET_ARGS[@]}" \
       -Drepatch.modelBackupDir="$TEMPLATE" > >(tee "$RUNLOG") 2>&1 &
   local GRADLE_PID=$!
@@ -251,6 +366,13 @@ run_pipeline() {
     if ! kill -0 "$GRADLE_PID" 2>/dev/null; then
       wait "$GRADLE_PID"; RC=$?
       log "pipeline exited on its own rc=$RC"
+      # A crash inside the project loop still exits 0 from the IDE:
+      # detect an incomplete run rather than reporting silent success.
+      DONE=$("${MY[@]}" -N -e "SELECT COUNT(*) FROM patch WHERE is_done=1" "$RP_DB" 2>/dev/null || echo 0)
+      if [ "$RC" -eq 0 ] && [ "${DONE:-0}" -lt "$EXPECTED" ]; then
+        log "WARNING: pipeline exited with only ${DONE:-0}/$EXPECTED scenarios done — incomplete run"
+        RC=3
+      fi
       break
     fi
     if [ "$(date +%s)" -ge "$DEADLINE" ]; then
@@ -280,8 +402,16 @@ run_pipeline() {
   VACUOUS=${VACUOUS:-0}
   if [ "$VACUOUS" -gt 0 ]; then
     echo
-    log "WARNING: $VACUOUS vacuous-inversion event(s) — RePatch degraded to plain cherry-pick for those scenarios (see $RUNLOG)"
-    RC=$(( RC == 0 ? 42 : RC ))
+    if [ "$PARITY" = "1" ]; then
+      # Paper-parity runs include model-less projects where the engine
+      # is expected to partially no-op; report loudly but don't fail.
+      log "NOTE: $VACUOUS vacuous-inversion event(s) — expected for the"
+      log "model-less non-kafka projects in a complete run; if any occur"
+      log "during KAFKA scenarios that is a real problem (see $RUNLOG)"
+    else
+      log "WARNING: $VACUOUS vacuous-inversion event(s) — RePatch degraded to plain cherry-pick for those scenarios (see $RUNLOG)"
+      RC=$(( RC == 0 ? 42 : RC ))
+    fi
   fi
 
   print_verdicts "$RP_DB"
@@ -305,9 +435,10 @@ banner() {
 
    repatch run                    golden 5-patch sample set
    repatch run 16954              one kafka PR (or a list)
-   repatch run --dataset complete the paper's 393 kafka PRs (~12-24h;
-                                  use --token <github-token>, resume
-                                  after interruption with --keep-db)
+   repatch run --dataset complete the paper's evaluation: 467 scenarios
+                                  (393 kafka modeled + 74 paper-parity;
+                                  ~15-30h; use --token <github-token>,
+                                  resume interruptions with --keep-db)
    repatch run --golden-check     sample + golden baseline diff
    repatch runs                   list past run databases
    repatch verdicts [db]          verdict table of a run
