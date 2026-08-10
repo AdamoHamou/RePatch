@@ -217,8 +217,16 @@ public class RePatchIntegration {
                 Patch patch = Patch.findFirst("number = ? and project_id = ?",
                         Integer.valueOf(values[2]), proj.getId());
                 if (patch == null) {
-                    patch = new Patch(Integer.valueOf(values[2]), String.valueOf(values[3]), 0, proj);
-                    patch.saveIt();
+                    try {
+                        patch = new Patch(Integer.valueOf(values[2]), String.valueOf(values[3]), 0, proj);
+                        patch.saveIt();
+                    } catch (Exception e) {
+                        // A failed row insert must not take down the whole
+                        // project loop; skip this scenario loudly instead.
+                        System.out.println("-> SKIP PR " + values[2] + ": could not create patch row ("
+                                + e.getMessage() + ")");
+                        continue;
+                    }
                 }
                 // Get the merge commit of the PR
                 // values[0] = Github url of the mainline
@@ -281,33 +289,43 @@ public class RePatchIntegration {
                 String prMergeAuthorEmail = (mergedBy != null && mergedBy.getEmail() != null) ? mergedBy.getEmail() : "";
                 long prTimeStamp = mergedPullRequest.getMergedAt() != null ? mergedPullRequest.getMergedAt().getTime() : 0L;
 
-                // get the parent of the merge commit
-                VcsFullCommitDetails mergeParents = getCommitDetails(repo, prMergeCommit);
-                List<Hash> parents = mergeParents.getParents();
-                String mergeParentSha = null;
-                if(!parents.isEmpty()) {
-                    mergeParentSha = parents.get(0).asString();
-                    System.out.println("-> Parent SHA (Base/Left): " + mergeParentSha);
-                }
+                // One poisoned scenario (unreachable merge commit, mid-merge
+                // crash, ...) must not take down an unattended multi-hundred
+                // scenario run: skip it loudly, mark it done so completion
+                // detection and resumes don't spin on it forever, and move on.
+                try {
+                    // get the parent of the merge commit
+                    VcsFullCommitDetails mergeParents = getCommitDetails(repo, prMergeCommit);
+                    List<Hash> parents = mergeParents.getParents();
+                    String mergeParentSha = null;
+                    if(!parents.isEmpty()) {
+                        mergeParentSha = parents.get(0).asString();
+                        System.out.println("-> Parent SHA (Base/Left): " + mergeParentSha);
+                    }
 
-                System.out.println(" -> MergeCommitSha: " + prMergeCommit);
+                    System.out.println(" -> MergeCommitSha: " + prMergeCommit);
 
-                // fail here if merge parent commit is null <--- This shouldn't happen
-                assert mergeParentSha != null;
+                    // fail here if merge parent commit is null <--- This shouldn't happen
+                    assert mergeParentSha != null;
 
-                // Now we construct the left, right and base parent commits
-                // since we are using cherry pick, base commit will the parent of the remote commit you want to cherry-pick
-                String gitHeadCommit =  commit.getId().asString();
+                    // Now we construct the left, right and base parent commits
+                    // since we are using cherry pick, base commit will the parent of the remote commit you want to cherry-pick
+                    String gitHeadCommit =  commit.getId().asString();
 
 
-                String rightCommit = prMergeCommit;
-                String leftCommit = gitHeadCommit;
-                String baseCommit  = mergeParentSha;
+                    String rightCommit = prMergeCommit;
+                    String leftCommit = gitHeadCommit;
+                    String baseCommit  = mergeParentSha;
 
-                String[] data = {rightCommit, leftCommit, baseCommit, prMergeAuthor, prMergeAuthorEmail, String.valueOf(prTimeStamp)};
+                    String[] data = {rightCommit, leftCommit, baseCommit, prMergeAuthor, prMergeAuthorEmail, String.valueOf(prTimeStamp)};
 
 //                evaluateMergeScenario(values, repo, proj);
-                evaluateMergeScenario(data, repo, proj, patch);
+                    evaluateMergeScenario(data, repo, proj, patch);
+                } catch (Exception e) {
+                    System.out.println("-> SKIP PR " + values[2] + ": scenario failed ("
+                            + e.getMessage() + "); marking done so the run continues");
+                    e.printStackTrace();
+                }
                 patch.setDone();
                 patch.saveIt();
             }
@@ -373,7 +391,12 @@ public class RePatchIntegration {
         // Utils.clearTemp(tempPath + "intelliMerge");
 
         String mergeCommitHash = values[0]; // values[1];
-        MergeCommit mergeCommit = MergeCommit.findFirst("commit_hash = ?", mergeCommitHash);
+        // Scope by project: the same mainline merge commit recurs across
+        // projects (two forks of one mainline evaluate the same PR), and an
+        // unscoped lookup silently skips the second project's scenario as
+        // "already done".
+        MergeCommit mergeCommit = MergeCommit.findFirst("commit_hash = ? and project_id = ?",
+                mergeCommitHash, proj.getId());
         if(mergeCommit != null && mergeCommit.isDone()) {
             return;
         }
@@ -714,6 +737,20 @@ public class RePatchIntegration {
                 addRemote(pathToProject, remoteProjectName, remoteOriginUrl);
             }
 
+            // A previously opened evaluation project must be closed first:
+            // with a project already open, openOrImport can return that
+            // existing project instead of the requested one, and every
+            // subsequent git call then runs against the previous project's
+            // repository (observed: second project resolved the first
+            // project's clone and failed with "bad object").
+            if (this.project != null && !this.project.isDisposed()) {
+                com.intellij.openapi.project.Project previous = this.project;
+                ApplicationManager.getApplication().invokeAndWait(() ->
+                        com.intellij.openapi.project.ex.ProjectManagerEx.getInstanceEx()
+                                .forceCloseProject(previous, true));
+                this.project = null;
+            }
+
             this.project = ProjectUtil.openOrImport(pathToProject.toPath(), null, false);
             // Without this, the pipeline races the async workspace-model load
             // and, on losing, runs the whole scenario against a module-less
@@ -729,6 +766,19 @@ public class RePatchIntegration {
         }
         catch(Exception e) {
             e.printStackTrace();
+        }
+        // Fail fast if the platform handed back some other project — running
+        // an evaluation against the wrong repository silently produces
+        // garbage verdicts, which is strictly worse than aborting.
+        try {
+            if (this.project == null || this.project.getBasePath() == null
+                    || !new File(this.project.getBasePath()).getCanonicalFile()
+                            .equals(pathToProject.getCanonicalFile())) {
+                throw new IllegalStateException("openOrImport did not open " + pathToProject
+                        + " (got " + (this.project == null ? "null" : this.project.getBasePath()) + ")");
+            }
+        } catch (IOException ioe) {
+            throw new IllegalStateException("could not validate opened project path", ioe);
         }
         return projectName;
 
