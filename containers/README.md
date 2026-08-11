@@ -46,26 +46,25 @@ repatch status                 # provisioning / health check
 
 ### The full paper run
 
-`repatch run --dataset complete` runs the paper's evaluation:
-**467 of the 478 scenarios** in `complete_data`.
+`repatch run --dataset complete` runs the paper's **full evaluation:
+all 477 distinct scenarios** in `complete_data` (478 lines, one
+duplicate).
 
-- **393 kafka scenarios** run with the provisioned clone and
-  regenerated module model — the honest engine, same condition as
+- **393 kafka mainline→fork scenarios** run with the provisioned clone
+  and regenerated module model — the honest engine, same condition as
   every validated baseline.
-- **74 non-kafka scenarios** (DSpace ×54, bitcoinj ×12,
-  checker-framework ×5, javacc ×2, sqlite-jdbc ×1) run in
+- **84 remaining scenarios** (DSpace ×54, bitcoinj ×12, reverse-kafka
+  ×7, checker-framework ×8, javacc ×2, sqlite-jdbc ×1) run in
   **paper-parity mode**: their repos are cloned at first use with a
   minimal single-module `.idea` — equivalent to what the paper's
   2020-era platform gave them. The refactoring engine may partially
   no-op there; the run reports vacuous-inversion counts instead of
   hiding them. Read those verdicts as paper-condition numbers, not
   honest-engine numbers.
-- **11 scenarios are excluded** (reverse-direction kafka ×8,
-  eisop→typetools checker-framework ×3): both directions of the same
-  repository resolve to a single clone directory and patch filter, so
-  the second direction would silently run against the wrong
-  repository. Supporting them needs clone-naming changes in the
-  pipeline itself.
+- Checkouts follow the **`<Owner>-<RepoName>` naming spec**
+  (`RepoNaming.java`, e.g. `linkedin-kafka`, `apache-kafka`), and
+  patches attach to projects by exact fork-URL match — this is what
+  lets both directions of the same repository coexist in one run.
 
 Practical notes:
 

@@ -6,7 +6,8 @@ RP="$HOME/RePatch"
 DATA="$HOME/data"                    # volume
 TEMPLATE="$DATA/template"            # pristine clone + 43-module model
 CLONE_PARENT="$DATA/run"             # per-run working copies live here
-CLONE="$CLONE_PARENT/kafka"
+# Checkout naming spec: <Owner>-<RepoName> from the fork URL (RepoNaming.java)
+CLONE="$CLONE_PARENT/linkedin-kafka"
 DATA_REL="data/run"                  # -PdataPath (resolved against $HOME)
 RESULTS="$HOME/results"              # volume
 LAST_RUN_FILE="$DATA/last-run"
@@ -115,15 +116,35 @@ ensure_template() {
 # and a single default module is exactly what the paper's 2020-era
 # platform gave these projects, so parity is preserved.
 provision_aux_clones() {
+  # One-time migration from the pre-spec flat directory names: rename
+  # cached clones instead of re-downloading gigabytes.
+  local OLD NEW
+  for OLD in \
+    "ParserGeneratorCC:tulipcc-ParserGeneratorCC" \
+    "sqlite-jdbc-crypt:Willena-sqlite-jdbc-crypt" \
+    "bitcoinj:bisq-network-bitcoinj" \
+    "dogecoinj-new:langerhans-dogecoinj-new" \
+    "checker-framework:eisop-checker-framework" \
+    "clarin-dspace:ufal-clarin-dspace" \
+    "DSpace:DSpace-DSpace" \
+  ; do
+    NEW="${OLD#*:}"; OLD="${OLD%%:*}"
+    if [ -d "$CLONE_PARENT/$OLD/.git" ] && [ ! -d "$CLONE_PARENT/$NEW" ]; then
+      mv "$CLONE_PARENT/$OLD" "$CLONE_PARENT/$NEW" && log "migrated clone $OLD -> $NEW"
+    fi
+  done
+
   local SPEC DIR FORK RNAME RURL
   for SPEC in \
-    "ParserGeneratorCC|https://github.com/tulipcc/ParserGeneratorCC|javacc|https://github.com/javacc/javacc" \
-    "sqlite-jdbc-crypt|https://github.com/Willena/sqlite-jdbc-crypt|sqlite-jdbc|https://github.com/xerial/sqlite-jdbc" \
-    "bitcoinj|https://github.com/bisq-network/bitcoinj|bitcoinj|https://github.com/bitcoinj/bitcoinj" \
-    "dogecoinj-new|https://github.com/langerhans/dogecoinj-new|bitcoinj|https://github.com/bitcoinj/bitcoinj" \
-    "checker-framework|https://github.com/eisop/checker-framework|checker-framework|https://github.com/typetools/checker-framework" \
-    "clarin-dspace|https://github.com/ufal/clarin-dspace|DSpace|https://github.com/DSpace/DSpace" \
-    "DSpace|https://github.com/DSpace/DSpace|clarin-dspace|https://github.com/ufal/clarin-dspace" \
+    "tulipcc-ParserGeneratorCC|https://github.com/tulipcc/ParserGeneratorCC|javacc|https://github.com/javacc/javacc" \
+    "Willena-sqlite-jdbc-crypt|https://github.com/Willena/sqlite-jdbc-crypt|sqlite-jdbc|https://github.com/xerial/sqlite-jdbc" \
+    "bisq-network-bitcoinj|https://github.com/bisq-network/bitcoinj|bitcoinj|https://github.com/bitcoinj/bitcoinj" \
+    "langerhans-dogecoinj-new|https://github.com/langerhans/dogecoinj-new|bitcoinj|https://github.com/bitcoinj/bitcoinj" \
+    "eisop-checker-framework|https://github.com/eisop/checker-framework|checker-framework|https://github.com/typetools/checker-framework" \
+    "typetools-checker-framework|https://github.com/typetools/checker-framework|checker-framework|https://github.com/eisop/checker-framework" \
+    "ufal-clarin-dspace|https://github.com/ufal/clarin-dspace|DSpace|https://github.com/DSpace/DSpace" \
+    "DSpace-DSpace|https://github.com/DSpace/DSpace|clarin-dspace|https://github.com/ufal/clarin-dspace" \
+    "apache-kafka|https://github.com/apache/kafka|kafka|https://github.com/linkedin/kafka" \
   ; do
     IFS='|' read -r DIR FORK RNAME RURL <<< "$SPEC"
     local D="$CLONE_PARENT/$DIR"
@@ -204,7 +225,7 @@ print_verdicts() {
 run_pipeline() {
   RP_DATASET="${RP_DATASET:-sample}"
   local PARITY=0 EVAL_PROJECT="linkedin/kafka"
-  # A complete run processes 467 scenarios; give it two days by default.
+  # A complete run processes 477 scenarios; give it two days by default.
   if [ "$RP_DATASET" = "complete" ] && [ -z "${RP_PRS:-}" ]; then
     RP_TIMEOUT="${RP_TIMEOUT:-172800}"
   else
@@ -238,6 +259,8 @@ run_pipeline() {
 
   log "refreshing working clone from template"
   mkdir -p "$CLONE_PARENT"
+  # pre-naming-spec working copy; recreated from the template as linkedin-kafka
+  [ -d "$CLONE_PARENT/kafka" ] && rm -rf "$CLONE_PARENT/kafka" && log "removed legacy clone dir kafka"
   rm -rf "$CLONE"
   cp -a "$TEMPLATE" "$CLONE"
 
@@ -270,27 +293,20 @@ run_pipeline() {
     GRADLE_DATASET_ARGS=(-PdataSet=sample)
     log "scenario override: PRs [$RP_PRS]"
   elif [ "$RP_DATASET" = "complete" ]; then
-    # The paper's complete list: 478 scenarios across 6 project pairs.
-    # kafka runs with the provisioned clone + regenerated module model
-    # (the honest engine). The other projects run in PAPER-PARITY mode:
-    # auto-cloned at first use, module-less — the same environment the
-    # paper artifact ran them in; the engine's refactoring machinery may
-    # partially no-op there, and the instrumentation reports it instead
-    # of hiding it. Two direction pairs are EXCLUDED (11 scenarios)
-    # because both directions of the same repo resolve to one clone
-    # directory / patch filter and the second direction would silently
-    # run against the wrong repository:
-    #   linkedin/kafka -> apache/kafka          (8; clone dir 'kafka' collides)
-    #   eisop -> typetools checker-framework    (3; both directions are 'checker-framework')
-    # (the Willena->xerial sqlite pattern below is defensive: that pair
-    # appears in the projects list but has no scenario lines today)
+    # The paper's complete list: 478 scenario lines (477 distinct) across
+    # 6 repository families in 10 direction pairs — ALL of them run.
+    # kafka mainline->fork runs with the provisioned clone + regenerated
+    # module model (the honest engine). Everything else — including the
+    # reverse kafka direction — runs in PAPER-PARITY mode: cloned at
+    # first use with a minimal single-module model, the same environment
+    # the paper artifact gave these projects; the engine's refactoring
+    # machinery may partially no-op there and the instrumentation
+    # reports it instead of hiding it. Owner-prefixed checkout naming
+    # (<Owner>-<RepoName>, RepoNaming.java) plus exact fork-URL patch
+    # matching make both directions of one repository coexist.
     PARITY=1
-    grep -v \
-      -e '^https://github.com/linkedin/kafka,https://github.com/apache/kafka,' \
-      -e '^https://github.com/eisop/checker-framework,https://github.com/typetools/checker-framework,' \
-      -e '^https://github.com/Willena/sqlite-jdbc-crypt,https://github.com/xerial/sqlite-jdbc,' \
-      "$RP/src/main/resources/complete_data/repatch_integration_patches" \
-      > "$SD/repatch_integration_patches"
+    cp "$RP/src/main/resources/complete_data/repatch_integration_patches" \
+       "$SD/repatch_integration_patches"
     # Project order: small projects first (fast feedback), kafka last.
     printf '%s\n' \
       "https://github.com/javacc/javacc,https://github.com/tulipcc/ParserGeneratorCC" \
@@ -298,8 +314,10 @@ run_pipeline() {
       "https://github.com/bitcoinj/bitcoinj,https://github.com/bisq-network/bitcoinj" \
       "https://github.com/bitcoinj/bitcoinj,https://github.com/langerhans/dogecoinj-new" \
       "https://github.com/typetools/checker-framework,https://github.com/eisop/checker-framework" \
+      "https://github.com/eisop/checker-framework,https://github.com/typetools/checker-framework" \
       "https://github.com/DSpace/DSpace,https://github.com/ufal/clarin-dspace" \
       "https://github.com/ufal/clarin-dspace,https://github.com/DSpace/DSpace" \
+      "https://github.com/linkedin/kafka,https://github.com/apache/kafka" \
       "https://github.com/apache/kafka,https://github.com/linkedin/kafka" \
       > "$SD/repatch_integration_projects"
     # Sanity: every scenario's project pair must be in the projects file.
@@ -309,7 +327,7 @@ run_pipeline() {
     [ -n "$MISSING" ] && log "WARNING: scenario pairs missing from projects file: $MISSING"
     GRADLE_DATASET_ARGS=(-PdataSet=sample)
     EVAL_PROJECT="github.com"   # substring-matches every project line
-    log "dataset: complete — $(grep -c . "$SD/repatch_integration_patches") scenarios (393 kafka modeled + 74 non-kafka in paper-parity mode; 11 direction-colliding scenarios excluded)"
+    log "dataset: complete — $(cut -d, -f2,3 "$SD/repatch_integration_patches" | sort -u | grep -c .) scenarios (393 kafka modeled + 84 in paper-parity mode)"
   else
     log "dataset: $RP_DATASET"
   fi
@@ -323,10 +341,16 @@ run_pipeline() {
   if [ "${RP_KEEP_DB:-0}" != "1" ]; then
     "${MY[@]}" -e "DROP DATABASE IF EXISTS \`$RP_DB\`" 2>/dev/null
   fi
-  sed "s/refactoring_aware_integration_repatch/$RP_DB/g" \
-      "$RP/src/main/resources/create_integration_schema.sql" | "${MY[@]}" 2>/dev/null
+  # The schema script contains DROP TABLE statements — applying it to an
+  # existing database would wipe the very data --keep-db promises to
+  # keep. Apply it only when the tables are absent.
   local TABLES
   TABLES=$("${MY[@]}" -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$RP_DB'" 2>/dev/null)
+  if [ "${TABLES:-0}" -eq 0 ]; then
+    sed "s/refactoring_aware_integration_repatch/$RP_DB/g" \
+        "$RP/src/main/resources/create_integration_schema.sql" | "${MY[@]}" 2>/dev/null
+    TABLES=$("${MY[@]}" -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$RP_DB'" 2>/dev/null)
+  fi
   log "database $RP_DB ready ($TABLES tables)"
   echo "$RP_DB" > "$LAST_RUN_FILE"
 
@@ -435,10 +459,10 @@ banner() {
 
    repatch run                    golden 5-patch sample set
    repatch run 16954              one kafka PR (or a list)
-   repatch run --dataset complete the paper's evaluation: 467 scenarios
-                                  (393 kafka modeled + 74 paper-parity;
-                                  ~15-30h; use --token <github-token>,
-                                  resume interruptions with --keep-db)
+   repatch run --dataset complete the paper's FULL evaluation: 477
+                                  scenarios (393 kafka modeled + 84
+                                  paper-parity; ~15-30h; use --token
+                                  <github-token>, resume with --keep-db)
    repatch run --golden-check     sample + golden baseline diff
    repatch runs                   list past run databases
    repatch verdicts [db]          verdict table of a run

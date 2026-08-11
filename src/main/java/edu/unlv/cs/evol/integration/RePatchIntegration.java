@@ -2,6 +2,7 @@ package edu.unlv.cs.evol.integration;
 
 import edu.unlv.cs.evol.integration.data.ConflictingFileData;
 import edu.unlv.cs.evol.integration.utils.GitHubUtils;
+import edu.unlv.cs.evol.integration.utils.RepoNaming;
 import edu.unlv.cs.evol.repatch.RePatch;
 import edu.unlv.cs.evol.repatch.refactoringObjects.RefactoringObject;
 import edu.unlv.cs.evol.integration.utils.EvaluationUtils;
@@ -110,7 +111,7 @@ public class RePatchIntegration {
             }
             proj = Project.findFirst("fork_url = ?", projectUrl);
             if (proj == null) {
-                projectName = openProject(path, projectUrl, mainLineUrl).substring(1); //name of the fork repo, e.g linkedin
+                projectName = openProject(path, projectUrl, mainLineUrl); // checkout dir name, e.g. linkedin-kafka
                 System.out.println("Starting Project -> " + projectName);
                 proj = new Project(mainLineUrl, mainLineName, projectUrl, projectName);
                 proj.saveIt();
@@ -124,7 +125,7 @@ public class RePatchIntegration {
             } else if (proj.isDone()) {
                 continue;
             } else {
-                projectName = openProject(path, projectUrl, mainLineUrl).substring(1);
+                projectName = openProject(path, projectUrl, mainLineUrl);
                 System.out.println("Continuing " + projectName);
                 GitRepositoryManager repoManager = GitRepositoryManager.getInstance(project);
                 List<GitRepository> repos = repoManager.getRepositories();
@@ -135,7 +136,7 @@ public class RePatchIntegration {
                 }
             }
             System.out.println("Repository for Integration -> " + repo);
-            evaluateProject(repo, proj, projectName);
+            evaluateProject(repo, proj, projectUrl);
             proj.setDone();
             proj.saveIt();
 
@@ -192,7 +193,7 @@ public class RePatchIntegration {
 //        }
 //
 //    }
-    private void evaluateProject(GitRepository repo, Project proj, String projectName) throws Exception {
+    private void evaluateProject(GitRepository repo, Project proj, String projectUrl) throws Exception {
         URL url = IntegrationPipeline.class.getResource(dataSetDir() + "/repatch_integration_patches");
 
         InputStream inputStream = url.openStream();
@@ -208,7 +209,11 @@ public class RePatchIntegration {
         for(String line : lines) {
             String[] values = line.split(",");
 //            System.out.println("VALUES: " + Arrays.toString(values));
-            if(values[1].contains(projectName)) {
+            // Match patches by the variant fork's URL, not the checkout dir
+            // name: the dir is owner-prefixed (linkedin-kafka) and no longer
+            // a substring of the URL in the patches file — and substring
+            // matching cross-leaked between forks sharing a repo name.
+            if(values[1].trim().equals(projectUrl)) {
                 System.out.println(">>>>>>>>>Patch Integration " + ++i + ": PR " + values[2]+ "<<<<<<<<<<");
                 // Find-or-create: unconditionally inserting duplicated the
                 // patch row on every re-run of the same scenario list, and
@@ -704,12 +709,10 @@ public class RePatchIntegration {
     /*
      * Clone the given project.
      */
-    private void cloneProject(String path, String url) {
-        System.out.println("TASK: cloning project -> " + url);
-        String projectName = url.substring(url.lastIndexOf("/"));
-        String clonePath = path + projectName;
+    private void cloneProject(File target, String url) {
+        System.out.println("TASK: cloning project -> " + url + " into " + target);
         try {
-            Git.cloneRepository().setURI(url).setDirectory(new File(clonePath)).call();
+            Git.cloneRepository().setURI(url).setDirectory(target).call();
         }
         catch(GitAPIException | JGitInternalException e) {
             e.printStackTrace();
@@ -720,21 +723,26 @@ public class RePatchIntegration {
      * Open the given project.
      */
     private String openProject(String path, String url, String remoteOriginUrl) {
-        String projectName = url.substring(url.lastIndexOf("/"));
+        // Owner-prefixed checkout naming (<Owner>-<RepoName>, e.g.
+        // linkedin-kafka): both directions of the same repository get
+        // distinct clone directories, which repo-name-only naming collides.
+        String dirName = RepoNaming.directoryName(url);
 
         // get the remote repo name - the repo we are cherry-picking from.
-//        String remoteProjectName = remoteOriginUrl.substring(remoteOriginUrl.lastIndexOf("/"));
         String remoteProjectName = remoteOriginUrl.substring(remoteOriginUrl.lastIndexOf("/") + 1);
         remoteRepoName = remoteProjectName;
         System.out.println("-> Remote Repo Name: " + remoteProjectName);
-        File pathToProject = new File(path + projectName);
+        File pathToProject = new File(path, dirName);
 
         try {
             if(!pathToProject.exists()) {
 
-                cloneProject(path, url);
+                cloneProject(pathToProject, url);
                 // add mainLineUrl to the repo we are working with as
                 addRemote(pathToProject, remoteProjectName, remoteOriginUrl);
+            } else if (!new File(pathToProject, ".git").isDirectory()) {
+                throw new IllegalStateException(pathToProject + " exists but is not a git checkout —"
+                        + " delete it and re-run so the pipeline can clone " + url);
             }
 
             // A previously opened evaluation project must be closed first:
@@ -780,7 +788,7 @@ public class RePatchIntegration {
         } catch (IOException ioe) {
             throw new IllegalStateException("could not validate opened project path", ioe);
         }
-        return projectName;
+        return dirName;
 
     }
 
