@@ -85,32 +85,78 @@ case "$cmd" in
     [[ "$pr" =~ ^[0-9]+$ ]] || { log "not a PR number: $pr"; exit 2; }
     db=$(resolve_db "${2:-}") || exit 1
     start_mysql || exit $?
-    ids=$("${MY[@]}" -N -e "SELECT mc.id FROM merge_commit mc
-                            JOIN patch p ON mc.patch_id = p.id
-                            WHERE p.number = $pr" "$db" 2>/dev/null)
-    if [ -z "$ids" ]; then
+    # Trees live under the owner-prefixed checkout dir name
+    # (<Owner>-<RepoName>, from the project's fork URL).
+    rows=$("${MY[@]}" -N -e "
+      SELECT CONCAT(SUBSTRING_INDEX(pj.fork_url,'/',-2), '/', mc.id)
+      FROM merge_commit mc
+      JOIN patch p ON mc.patch_id = p.id AND mc.project_id = p.project_id
+      JOIN project pj ON p.project_id = pj.id
+      WHERE p.number = $pr" "$db" 2>/dev/null | tr '/' ' ')
+    if [ -z "$rows" ]; then
       log "PR $pr has no merge_commit rows in $db (clean cherry-pick, or not in that run)"
       exit 1
     fi
     hit=0
-    for id in $ids; do
-      d="$RESULTS/kafka/commit$id"
+    while read -r owner repo id; do
+      [ -n "$id" ] || continue
+      d="$RESULTS/$owner-$repo/commit$id"
       if [ -d "$d" ]; then
         hit=1
         echo "$d"
-        find "$d" -maxdepth 1 -mindepth 1 -type d | sed 's/^/  /'
+        find "$d" -maxdepth 1 -mindepth 1 | sed 's/^/  /'
       fi
-    done
+    done <<< "$rows"
     if [ "$hit" = 1 ]; then
       echo
       log "each tree is the merged working copy that run produced;"
       log "conflict markers (<<<<<<<) are left in place where merges conflicted."
+      log "repatch-state.bundle + repatch-state.json hold the full RePatch-"
+      log "produced target state (evidence trees are trimmed to Java files)."
       log "NOTE: trees are keyed by merge_commit id within a run database —"
       log "a later run reusing the same id overwrites them."
     else
-      log "PR $pr maps to commit id(s) [$ids] in $db, but no tree exists under $RESULTS/kafka/"
+      log "PR $pr maps to merge_commit row(s) in $db, but no tree exists under $RESULTS"
       log "(the trees were overwritten by a later run)"
     fi
+    ;;
+
+  validate)
+    # Validation study (levels 2-3): build + test the baseline target and
+    # the RePatch-produced target state for every conflict-free case.
+    db="" ; VARGS=() ; RECORDS_ONLY=0 ; STATUS_ONLY=0
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --db)           db="$2"; shift 2 ;;
+        --records)      RECORDS_ONLY=1; shift ;;
+        --status)       STATUS_ONLY=1; shift ;;
+        --prs)          VARGS+=(--prs "$2"); shift 2 ;;
+        --cases)        VARGS+=(--cases "$2"); shift 2 ;;
+        --test-scope)   VARGS+=(--test-scope "$2"); shift 2 ;;
+        --jdk)          VARGS+=(--jdk "$2"); shift 2 ;;
+        --limit)        VARGS+=(--limit "$2"); shift 2 ;;
+        --redo)         VARGS+=(--redo); shift ;;
+        *)              log "unknown flag: $1 (see 'repatch help')"; exit 2 ;;
+      esac
+    done
+    db=$(resolve_db "$db") || exit 1
+    OUT="$RESULTS/validation/$db"
+    export DATA RESULTS TEMPLATE CLONE_PARENT DB_HOST JDBC_USER JDBC_PASSWORD
+    if [ "$STATUS_ONLY" = 1 ]; then
+      python3 "$HOME/bin/repatch-validate.py" status --out "$OUT"
+      exit $?
+    fi
+    start_mysql || exit $?
+    python3 "$HOME/bin/repatch-validate.py" records --db "$db" --out "$OUT" || exit $?
+    [ "$RECORDS_ONLY" = 1 ] && { log "dataset refreshed: $OUT/dataset.jsonl"; exit 0; }
+    python3 "$HOME/bin/repatch-validate.py" validate --db "$db" --out "$OUT" "${VARGS[@]}"
+    exit $?
+    ;;
+
+  report)
+    # Generate the study's tables/figures/summary from the dataset.
+    db=$(resolve_db "${1:-}") || exit 1
+    python3 "$RP/validation/analyze.py" "$RESULTS/validation/$db"
     ;;
 
   sql)

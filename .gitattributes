@@ -4,3 +4,5 @@
 gradlew text eol=lf
 # extensionless CLI script — *.sh doesn't catch it
 containers/bin/repatch text eol=lf
+containers/bin/repatch-validate.py text eol=lf
+validation/analyze.py text eol=lf

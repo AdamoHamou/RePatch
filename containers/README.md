@@ -85,6 +85,42 @@ docker run -it --rm -v repatch-data:/home/repatch/data -v repatch-results:/home/
 repatch run --dataset complete --token ghp_yourtoken
 ```
 
+### The validation study (build + test stages)
+
+`repatch run` covers level 1 of the RePatch 2.0 validation study (does
+RePatch produce a conflict-free target-side change?) and, since the
+provenance capture landed, exports the **exact RePatch-produced target
+state** per scenario (`repatch-state.bundle` + `repatch-state.json` next
+to the evidence trees). `repatch validate` adds levels 2–3 on top of a
+completed run:
+
+```
+repatch validate                      # all conflict-free cases of the last run
+repatch validate --db repatch_complete --prs 16954,12363
+repatch validate --test-scope none    # build stage only (fast first pass)
+repatch validate --status             # progress
+repatch report                        # tables/figures/summary from the dataset
+```
+
+For every case whose integration was conflict-free it builds and tests
+**both** the baseline target (`target_revision`, before integration) and
+the RePatch-produced state, in a dedicated scratch clone (never the
+pipeline's clones), with a per-project JDK (8/11/17 are in the image).
+Tests already failing at the baseline are not counted as regressions —
+only newly failing tests are. Every case ends in exactly one of `VALID |
+INTEGRATION_FAIL | BUILD_FAIL | TEST_FAIL | INCONCLUSIVE`, with stage-wise
+detail preserved. Results: one JSON record per case in
+`results/validation/<db>/dataset.jsonl` (schema: `validation/SCHEMA.md`
+in the repo), raw build/test logs beside it, report artifacts from
+`repatch report`. Baseline results are cached per project+revision (every
+case of a project shares its baseline), so the expensive side runs once.
+Gradle multi-module projects (kafka) default to **module-scoped tests**
+(only modules the change touches, applied identically to baseline and
+post state); use `--test-scope full` for the entire suite. Do not run
+`validate` while a pipeline run is in progress. Interrupt/resume is safe:
+the dataset is checkpointed after every case, and already-classified
+cases are skipped (`--redo` to force).
+
 The first `repatch run` provisions the kafka evaluation clone into the
 data volume (one-time ~500 MB download + dependency resolution); every
 later run starts from that cache. Each run gets its own database

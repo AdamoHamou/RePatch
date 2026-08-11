@@ -13,3 +13,5 @@ iso-runs
 containers/Dockerfile
 containers/docker-compose.yml
 containers/README.md
+**/__pycache__
+*.pyc

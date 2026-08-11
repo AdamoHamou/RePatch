@@ -426,9 +426,20 @@ public class RePatchIntegration {
         boolean isConflicting = gitUtils.cherrypick(remoteRepoName, mergeCommitHash);
         System.out.println("-> Is conflicting: " + isConflicting);
         if(!isConflicting) {
-            // This should always be conflicting
-            // Now we are using Git CherryPick
-            //System.out.println("-> Error merging with Git CherryPick");
+            // The patch applies cleanly with plain git cherry-pick, so the
+            // refactoring engine is never exercised. Record the outcome as a
+            // done merge_commit with is_conflicting=0 (and no merge_result
+            // rows) instead of vanishing: the validation study needs an
+            // auditable per-case outcome, and without this row a clean
+            // application is indistinguishable from a failed PR fetch.
+            if (mergeCommit != null) {
+                mergeCommit.delete();
+            }
+            mergeCommit = new MergeCommit(mergeCommitHash, false, leftParent,
+                    rightParent, proj, patch, values[3], values[4], Long.parseLong(values[5]));
+            mergeCommit.saveIt();
+            mergeCommit.setDone();
+            mergeCommit.saveIt();
             return;
         }
         // Set patch's is_conflicting column to true
@@ -484,6 +495,15 @@ public class RePatchIntegration {
         Utils.saveContent(project, refMergePath);
         EvaluationUtils.removeUnmergedAndNonJavaFiles(refMergePath);
         DumbService.getInstance(project).completeJustSubmittedTasks();
+
+        // Validation-study provenance: the trimmed evidence copies above are
+        // Java-only and not buildable, so capture the exact target state
+        // RePatch produced as a git bundle + provenance file while the live
+        // clone still holds it. Timeout scenarios are skipped (their
+        // resultDir is deleted further down).
+        if (refMergeConflictsAndRuntime.getRight() >= 0) {
+            captureResultState(repo, resultDir, leftParent, rightParent, baseCommit, mergeCommitHash);
+        }
 
 
         File refMergeConflictDirectory = new File(resultDir + "/refMergeResults");
@@ -635,6 +655,50 @@ public class RePatchIntegration {
 
         mergeCommit.setDone();
         mergeCommit.saveIt();
+    }
+
+    /*
+     * Record the exact target state RePatch produced for this scenario:
+     * commit the working tree on the current HEAD, then export a
+     * leftParent..HEAD bundle plus a provenance file into the scenario's
+     * result directory. Any clone that contains leftParent can reproduce the
+     * state with `git fetch <bundle>` + checkout of result_sha, so the state
+     * survives the per-run clone recreation. Never fails the scenario.
+     */
+    private void captureResultState(GitRepository repo, String resultDir, String leftParent,
+                                    String rightParent, String baseCommit, String mergeCommitHash) {
+        try {
+            File root = new File(repo.getRoot().getPath());
+            new File(resultDir).mkdirs();
+            // Stage everything except IDE metadata; a conflicted cherry-pick
+            // index is resolved by the add, so the commit always succeeds.
+            edu.unlv.cs.evol.repatch.utils.Utils.runSystemCommandInDir(root,
+                    "git", "add", "-A", "--", ".", ":(exclude).idea", ":(exclude)*.iml");
+            edu.unlv.cs.evol.repatch.utils.Utils.runSystemCommandInDir(root,
+                    "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "--allow-empty",
+                    "--no-verify", "-m", "repatch-result " + mergeCommitHash);
+            List<String> head = edu.unlv.cs.evol.repatch.utils.Utils.runSystemCommandInDir(root,
+                    "git", "rev-parse", "HEAD");
+            String resultSha = head.isEmpty() ? "" : head.get(0).trim();
+            edu.unlv.cs.evol.repatch.utils.Utils.runSystemCommandInDir(root,
+                    "git", "bundle", "create", resultDir + "/repatch-state.bundle",
+                    leftParent + "..HEAD");
+            String json = "{\n"
+                    + "  \"merge_commit\": \"" + mergeCommitHash + "\",\n"
+                    + "  \"left_parent\": \"" + leftParent + "\",\n"
+                    + "  \"right_parent\": \"" + rightParent + "\",\n"
+                    + "  \"base_commit\": \"" + baseCommit + "\",\n"
+                    + "  \"result_sha\": \"" + resultSha + "\",\n"
+                    + "  \"bundle\": \"repatch-state.bundle\"\n"
+                    + "}\n";
+            java.nio.file.Files.write(java.nio.file.Paths.get(resultDir, "repatch-state.json"),
+                    json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            System.out.println("-> Captured RePatch result state " + resultSha
+                    + " -> " + resultDir + "/repatch-state.bundle");
+        } catch (Exception e) {
+            System.out.println("-> WARNING: could not capture result state for "
+                    + mergeCommitHash + " (" + e.getMessage() + ")");
+        }
     }
 
     /*

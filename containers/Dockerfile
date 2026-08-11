@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git ca-certificates curl unzip tini less \
         xvfb libfreetype6 fontconfig fonts-dejavu-core \
         mysql-server mysql-client \
+        python3 python3-matplotlib maven \
     && rm -rf /var/lib/apt/lists/* /var/lib/mysql
 
 # JDK 11 serves two roles: the evaluation project's model pins
@@ -30,6 +31,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # entrypoint's `gradle idea` model regeneration runs kafka's own
 # gradle, which predates JDK 17 support.
 COPY --from=eclipse-temurin:11-jdk-noble /opt/java/openjdk /usr/lib/jvm/temurin-11-jdk-amd64
+# JDK 8 is for the validation study's build/test stages only: the benchmark
+# projects are of the paper's era (2015-2017 bitcoinj, DSpace 5/6, ...) and
+# fail on a modern toolchain for reasons unrelated to the patch under test.
+COPY --from=eclipse-temurin:8-jdk-noble /opt/java/openjdk /usr/lib/jvm/temurin-8-jdk-amd64
 
 # Dedicated runtime user at uid 1000 (drop the stock ubuntu user that
 # occupies the uid in noble-based images). The workdir is created and

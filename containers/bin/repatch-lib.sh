@@ -205,12 +205,18 @@ print_verdicts() {
     JOIN merge_result mr ON mr.merge_commit_id = mc.id
     ORDER BY pj.id, p.number, mr.merge_tool;" "$db" 2>/dev/null
   "${MY[@]}" -t -e "
-    SELECT SUBSTRING_INDEX(pj.fork_url,'/',-1) AS project, p.number, 'clean (no conflict)' AS note
+    SELECT SUBSTRING_INDEX(pj.fork_url,'/',-1) AS project, p.number,
+           CASE WHEN EXISTS (SELECT 1 FROM merge_commit mc
+                             WHERE mc.patch_id = p.id AND mc.project_id = p.project_id
+                               AND mc.is_conflicting = 0)
+                THEN 'clean (git cherry-pick applies)'
+                ELSE 'skipped (no scenario recorded)' END AS note
     FROM patch p
     JOIN project pj ON p.project_id = pj.id
     WHERE p.is_done = 1
       AND NOT EXISTS (SELECT 1 FROM merge_commit mc JOIN merge_result mr
-                      ON mr.merge_commit_id = mc.id WHERE mc.patch_id = p.id)
+                      ON mr.merge_commit_id = mc.id WHERE mc.patch_id = p.id
+                        AND mc.project_id = p.project_id)
     ORDER BY pj.id, p.number;" "$db" 2>/dev/null
 }
 
@@ -468,6 +474,13 @@ banner() {
    repatch verdicts [db]          verdict table of a run
    repatch log [db]               page through a run's log
    repatch results [PR]           locate merged result trees
+   repatch validate [--db NAME]   validation study levels 2-3: build +
+                                  test baseline and RePatch states of
+                                  every conflict-free case (flags:
+                                  --prs n,n --test-scope auto|module|
+                                  full|none --jdk 8|11|17 --limit N
+                                  --records --status --redo)
+   repatch report [db]            study tables/figures from the dataset
    repatch sql [db]               open a mysql shell
    repatch status                 provisioning / health check
    repatch help                   this text
