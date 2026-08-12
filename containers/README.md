@@ -130,6 +130,34 @@ across sessions: databases, clone, and caches all live in the
 `repatch-data` volume, merged result trees and logs in
 `repatch-results`. Type `exit` to leave; MySQL shuts down cleanly.
 
+### Browsing the databases with phpMyAdmin
+
+By default MySQL listens on the container's loopback only. Set
+`RP_DB_BIND=0.0.0.0` to let it accept connections from other containers
+(or, combined with `-p`, from the host). The `repatch`/`repatch` account
+already permits remote login.
+
+```bash
+docker network create repatch-net   # one-time
+
+docker run -it --rm --network repatch-net --name repatch \
+  -e RP_DB_BIND=0.0.0.0 \
+  -v repatch-data:/home/repatch/data -v repatch-results:/home/repatch/results \
+  --memory 10g --shm-size 1g repatch-headless
+
+docker run -d --name repatch-pma --network repatch-net -p 8080:80 \
+  -e PMA_HOST=repatch -e PMA_USER=repatch -e PMA_PASSWORD=repatch phpmyadmin
+```
+
+Browse http://localhost:8080 — every run database (`repatch_477`,
+`repatch_sample`, ...) is visible. No MySQL port ever touches the host;
+the two containers talk over the private docker network. To use host
+tools (MySQL Workbench, a host phpMyAdmin) instead, publish the port:
+`-p 127.0.0.1:3307:3306 -e RP_DB_BIND=0.0.0.0` and connect to
+`127.0.0.1:3307`. Remember only one repatch container can hold the
+MySQL datadir at a time — browse from the same container that runs the
+evaluation, not a second one.
+
 ### Compose (optional convenience)
 
 ```bash

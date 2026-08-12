@@ -53,7 +53,7 @@ start_mysql() {
   "$MYSQLD" --no-defaults --daemonize \
       --datadir="$MYSQL_DATA" --socket="$MYSQL_SOCK" \
       --pid-file="$MYSQL_DATA/mysqld.pid" --log-error="$MYSQL_DATA/error.log" \
-      --bind-address=127.0.0.1 --port=3306 --mysqlx=OFF --secure-file-priv= \
+      --bind-address="${RP_DB_BIND:-127.0.0.1}" --port=3306 --mysqlx=OFF --secure-file-priv= \
       2>/dev/null \
     || { log "mysqld failed to start (see $MYSQL_DATA/error.log)"; return 4; }
   "${MYROOT[@]}" -e "CREATE USER IF NOT EXISTS '$JDBC_USER'@'%' IDENTIFIED BY '$JDBC_PASSWORD';
