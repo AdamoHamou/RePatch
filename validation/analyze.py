@@ -77,12 +77,19 @@ def main():
     out.mkdir(exist_ok=True)
 
     # ---- stage funnel -----------------------------------------------------
-    evaluated = [r for r in records if outcome(r) != "PENDING"]
+    # A case is evaluated once ANY stage has produced data: a build-only
+    # sweep leaves build-passing cases PENDING (tests not yet run), and
+    # they must still count in the integration and build stages.
+    def has_stage_data(r):
+        return outcome(r) != "PENDING" or (r.get("post") or {}).get("build")
+
+    evaluated = [r for r in records if has_stage_data(r)]
     conflict_free = [r for r in evaluated
                      if r["integration"]["status"] in ("CONFLICT_FREE", "GIT_CLEAN")]
     builds = [r for r in conflict_free
               if (r.get("post") or {}).get("build") == "PASS"]
     tests_pass = [r for r in builds if outcome(r) == "VALID"]
+    tests_pending = [r for r in builds if outcome(r) == "PENDING"]
 
     n_eval = len(evaluated)
     funnel = [
@@ -91,8 +98,9 @@ def main():
          ci_str(len(conflict_free), n_eval)),
         ("Build succeeds", len(builds), len(conflict_free),
          ci_str(len(builds), len(conflict_free))),
-        ("Existing tests pass", len(tests_pass), len(builds),
-         ci_str(len(tests_pass), len(builds))),
+        ("Existing tests pass", len(tests_pass),
+         len(builds) - len(tests_pending),
+         ci_str(len(tests_pass), len(builds) - len(tests_pending))),
     ]
     with (out / "table1_funnel.csv").open("w") as f:
         f.write("stage,cases,denominator,percentage,wilson95\n")
@@ -141,6 +149,10 @@ def main():
     for stage, k, n, ci in funnel:
         md.append("| %s | %d | %s | %s |" % (stage, k, pct(k, n), ci))
     md.append("\n(percentages are stage-conditional: each row over the row above)\n")
+    if tests_pending:
+        md.append("%d build-passing cases have not run their test stage yet "
+                  "(PENDING); the tests-pass row is over the %d that have.\n"
+                  % (len(tests_pending), len(builds) - len(tests_pending)))
     md.append("## Table 2: final outcome distribution\n")
     md.append("| Outcome | Cases | % of evaluated |")
     md.append("|---|---|---|")
