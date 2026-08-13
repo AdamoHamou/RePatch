@@ -49,18 +49,19 @@ MYSQL = ["mysql", "-h", os.environ.get("DB_HOST", "127.0.0.1"),
 BUILD_TIMEOUT = int(os.environ.get("RP_VAL_BUILD_TIMEOUT", "3600"))
 TEST_TIMEOUT = int(os.environ.get("RP_VAL_TEST_TIMEOUT", "14400"))
 
-# Per-project JDK for baseline/post builds (the projects are of the paper's
-# era; building a 2016 codebase on JDK 17 fails on toolchain, not on the
-# patch). Overridable with --jdk.
+# First JDK to try per project. The target revision is the fork's live
+# HEAD, so actively developed forks want a modern JDK while dormant ones
+# are stuck in their era; a wrong guess costs one failed build before the
+# ladder walks the other baked JDKs. Overridable with --jdk.
 JDK_DEFAULT = {
-    "linkedin-kafka": "11",
-    "apache-kafka": "11",
-    "bisq-network-bitcoinj": "8",
-    "langerhans-dogecoinj-new": "8",
-    "eisop-checker-framework": "11",
-    "typetools-checker-framework": "11",
-    "ufal-clarin-dspace": "8",
-    "DSpace-DSpace": "8",
+    "linkedin-kafka": "11",              # 2.4-based fork, JDK 11 proven
+    "apache-kafka": "17",                # live trunk
+    "bisq-network-bitcoinj": "17",       # gradle 8.x era
+    "langerhans-dogecoinj-new": "8",     # dormant 2015 fork
+    "eisop-checker-framework": "17",
+    "typetools-checker-framework": "17",
+    "ufal-clarin-dspace": "8",           # DSpace 5/6 era
+    "DSpace-DSpace": "17",               # live mainline
     "tulipcc-ParserGeneratorCC": "8",
     "Willena-sqlite-jdbc-crypt": "11",
 }
@@ -139,15 +140,14 @@ def classify(rec):
     cause = (post.get("inconclusive_cause") or base.get("inconclusive_cause"))
     if cause:
         return "INCONCLUSIVE", "infrastructure", cause
-    if base.get("build") in ("TIMEOUT", "UNSUPPORTED"):
+    # A baseline that does not build cannot support a defensible build/test
+    # comparison (study section 4) — checked before the pending-post case,
+    # because a failed baseline legitimately has no post record at all.
+    if base.get("build") in ("FAIL", "TIMEOUT", "UNSUPPORTED"):
         return "INCONCLUSIVE", "infrastructure", \
             "baseline_build_%s" % base["build"].lower()
     if not post.get("build"):
         return "PENDING", None, None
-    if base.get("build") == "FAIL":
-        # A baseline that does not build cannot support a defensible
-        # build/test comparison (study section 4).
-        return "INCONCLUSIVE", "infrastructure", "baseline_build_fail"
     if post["build"] == "FAIL":
         return "BUILD_FAIL", "build", None
     if post["build"] != "PASS":
@@ -367,8 +367,17 @@ def prepare_post_state(rec, clone, log_file):
         git(clone, "cherry-pick", "--abort")
         rc, _, err = git(clone, "cherry-pick", "--allow-empty", "-m", "1", right)
     if rc != 0:
+        # The pipeline's clean/conflicting call is Java-scoped: a scenario is
+        # recorded GIT_CLEAN when no JAVA file conflicts, even if non-Java
+        # files do. Such a case has no well-defined integrated state to
+        # build, so it gets its own inconclusive cause; a Java conflict here
+        # would contradict the pipeline's verdict and is a real anomaly.
+        unmerged = git(clone, "diff", "--name-only", "--diff-filter=U")[1].splitlines()
         git(clone, "cherry-pick", "--abort")
-        Path(log_file).write_text("cherry-pick reconstruction failed: %s\n" % err)
+        Path(log_file).write_text("cherry-pick reconstruction failed: %s\nunmerged:\n%s\n"
+                                  % (err, "\n".join(unmerged)))
+        if unmerged and not any(p.endswith(".java") for p in unmerged):
+            return None, "non_java_unmerged"
         return None, "reconstruction_mismatch"
     return git(clone, "rev-parse", "HEAD")[1], None
 
@@ -564,9 +573,18 @@ def validate_case(rec, args, out_dir, baseline_cache):
         if not ok:
             inconclusive("baseline", "checkout_failed")
             return
-        log("%s: baseline build (jdk %s, %s)" % (case_id, jdk, system))
-        b = {"build": run_build(clone, system, jdk, log_dir / "baseline-build.log"),
-             "jdk": jdk, "build_system": system}
+        # The target revision is the fork's live HEAD, so its toolchain era
+        # is unknown up front: try the family default, then walk the other
+        # baked JDKs. The post build reuses whichever JDK the baseline chose.
+        ladder = [jdk] if args.jdk else \
+            [jdk] + [j for j in ("17", "11", "8") if j != jdk]
+        b = None
+        for j in ladder:
+            log("%s: baseline build (jdk %s, %s)" % (case_id, j, system))
+            status = run_build(clone, system, j, log_dir / "baseline-build.log")
+            b = {"build": status, "jdk": j, "build_system": system}
+            if status != "FAIL":
+                break
         if b["build"] == "PASS" and args.test_scope != "none":
             log("%s: baseline tests (%s)" % (case_id, scope_key))
             status, total, failing = run_tests(clone, system, tasks, jdk,
@@ -581,6 +599,7 @@ def validate_case(rec, args, out_dir, baseline_cache):
         cache_path.write_text(json.dumps(baseline_cache, indent=1, sort_keys=True))
     if rec["baseline"]["build"] != "PASS":
         return  # classified INCONCLUSIVE (baseline_build_fail) or pending
+    jdk = rec["baseline"].get("jdk", jdk)  # ladder may have picked another
 
     # 3. Post build + tests.
     ok, err = checkout_clean(clone, sha)
