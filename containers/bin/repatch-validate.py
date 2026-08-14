@@ -367,16 +367,25 @@ def prepare_post_state(rec, clone, log_file):
         git(clone, "cherry-pick", "--abort")
         rc, _, err = git(clone, "cherry-pick", "--allow-empty", "-m", "1", right)
     if rc != 0:
-        # The pipeline's clean/conflicting call is Java-scoped: a scenario is
-        # recorded GIT_CLEAN when no JAVA file conflicts, even if non-Java
-        # files do. Such a case has no well-defined integrated state to
-        # build, so it gets its own inconclusive cause; a Java conflict here
-        # would contradict the pipeline's verdict and is a real anomaly.
+        # Three distinct non-clean outcomes, kept apart because they mean
+        # different things for the study:
+        # - no unmerged files at all: the cherry-pick is REDUNDANT — the
+        #   patch content is already present in the target (git stops with
+        #   "nothing to commit"; --allow-empty only covers originally-empty
+        #   commits). The integrated state degenerates to the baseline.
+        # - non-Java unmerged only: consistent with the pipeline's
+        #   Java-scoped clean verdict, but there is no well-defined
+        #   integrated state to build.
+        # - Java unmerged: contradicts the pipeline's verdict — a real
+        #   anomaly worth investigating.
         unmerged = git(clone, "diff", "--name-only", "--diff-filter=U")[1].splitlines()
         git(clone, "cherry-pick", "--abort")
+        git(clone, "cherry-pick", "--quit")
         Path(log_file).write_text("cherry-pick reconstruction failed: %s\nunmerged:\n%s\n"
                                   % (err, "\n".join(unmerged)))
-        if unmerged and not any(p.endswith(".java") for p in unmerged):
+        if not unmerged:
+            return None, "patch_already_integrated"
+        if not any(p.endswith(".java") for p in unmerged):
             return None, "non_java_unmerged"
         return None, "reconstruction_mismatch"
     return git(clone, "rev-parse", "HEAD")[1], None
