@@ -434,11 +434,21 @@ def test_scope(rec, clone, scope_flag):
                         best = mod
                 if best:
                     hit.add(best)
-                elif "/" in path:  # source outside any module -> full suite
+                elif path.endswith((".java", ".scala", ".kt")):
+                    # A JVM source file outside every module means the scope
+                    # is genuinely unknown -> full suite. Anything else
+                    # (docs, checkstyle configs, root build scripts, python
+                    # system tests) selects no gradle test module and must
+                    # not force a multi-hour full-suite fallback.
                     unmatched = True
             if hit and not unmatched:
                 tasks = [":%s:test" % m for m in sorted(hit)]
                 return system, tasks, "module:" + ",".join(sorted(hit))
+            if not hit and not unmatched:
+                # No JVM source changed anywhere: with a passing build,
+                # existing tests are trivially unaffected. Record that
+                # instead of burning hours on a full suite.
+                return system, [], "no-jvm-source-changed"
     return system, ["test"] if system != "maven" else None, "full"
 
 
@@ -511,6 +521,10 @@ def run_tests(clone, system, tasks, jdk, log_file):
     """Returns (status, total, failing). Failures are read from the JUnit
     XMLs, so a non-zero exit with parsed results still counts as a completed
     test stage."""
+    if tasks == []:
+        # 'no-jvm-source-changed' sentinel: nothing to execute, and an
+        # empty gradle invocation would run the default tasks instead.
+        return "DONE", 0, []
     env = build_env(jdk)
     clear_stale_test_results(clone)
     if system in ("gradlew", "gradle"):
