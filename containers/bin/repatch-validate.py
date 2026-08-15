@@ -402,13 +402,26 @@ def detect_build_system(clone):
 
 
 def gradle_modules(clone):
-    """Gradle project paths from settings.gradle, e.g. 'core', 'connect:api'."""
+    """Gradle project paths from settings.gradle, e.g. 'core', 'connect:api'.
+    include statements span lines (kafka lists one module per comma-continued
+    line), so collect each statement until its continuation ends."""
     mods = set()
     settings = clone / "settings.gradle"
-    if settings.exists():
-        text = settings.read_text(errors="replace")
-        for m in re.finditer(r"include[\s(]+([^\n)]+)", text):
-            mods.update(re.findall(r"['\"]:?([\w:.\-]+)['\"]", m.group(1)))
+    if not settings.exists():
+        return mods
+    collecting = False
+    statement = []
+    for line in settings.read_text(errors="replace").splitlines():
+        stripped = line.strip()
+        if re.match(r"include[\s(]", stripped):
+            collecting = True
+            statement = [stripped]
+        elif collecting:
+            statement.append(stripped)
+        if collecting and not stripped.endswith(","):
+            mods.update(re.findall(r"['\"]:?([\w:.\-]+)['\"]",
+                                   " ".join(statement)))
+            collecting = False
     return mods
 
 
