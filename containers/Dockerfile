@@ -87,7 +87,9 @@ RUN sed -i 's/\r$//' /home/repatch/entrypoint.sh /home/repatch/bin/* \
 # Clone/template cache and results are volumes (see docker-compose.yml).
 # The mountpoints must pre-exist owned by the runtime user, or Docker
 # creates them root-owned at mount time.
-RUN mkdir -p /home/repatch/data /home/repatch/results
+# /home/repatch/import is where users drop their own scenario CSV files
+# (bind-mount a host directory there, or `docker cp` into it).
+RUN mkdir -p /home/repatch/data /home/repatch/results /home/repatch/import
 VOLUME ["/home/repatch/data", "/home/repatch/results"]
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/home/repatch/entrypoint.sh"]

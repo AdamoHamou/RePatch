@@ -24,9 +24,13 @@ services:
       RP_GOLDEN_CHECK: ${RP_GOLDEN_CHECK:-}
       RP_FORK_URL: ${RP_FORK_URL:-}
       RP_MAINLINE_URL: ${RP_MAINLINE_URL:-}
+      RP_GITHUB_TOKEN: ${RP_GITHUB_TOKEN:-}
     volumes:
       - repatch-data:/home/repatch/data
       - results:/home/repatch/results
+      # drop scenario CSV files in containers/import/ on the host and run
+      # `repatch <db> myfile.csv` inside
+      - ./import:/home/repatch/import
     mem_limit: 10g
     shm_size: 1g
 

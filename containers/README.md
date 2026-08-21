@@ -29,20 +29,118 @@ docker run -it --rm \
 ```
 
 That drops you into a shell inside the container with MySQL already
-running locally. From there:
+running locally. **On first launch it asks for a GitHub token** (input
+hidden, stored only in the `repatch-data` volume — see below). From
+there:
 
 ```
-repatch run                    # golden 5-patch sample set
-repatch run 16954              # one kafka PR (or several: 12363 15889)
-repatch run --dataset complete # the paper's kafka evaluation (393 PRs)
-repatch run --golden-check     # sample set + diff vs the golden baseline
-repatch runs                   # list past run databases
-repatch verdicts [db]          # verdict table of a run (default: latest)
-repatch log [db]               # page through a run's pipeline log
-repatch results [PR]           # locate the merged result trees
-repatch sql [db]               # open a mysql shell on the run data
-repatch status                 # provisioning / health check
+repatch run                               # golden 5-patch sample (smoke test)
+repatch run --golden-check                # sample + diff vs the golden baseline
+repatch run --dataset complete            # the paper's full evaluation (477)
+
+repatch <db> <source> <target> <pr>       # ONE scenario of your choosing
+repatch <db> <file.csv>                   # every scenario listed in a CSV
+
+repatch token                             # set / verify the GitHub token
+repatch runs                              # list past run databases
+repatch verdicts [db]                     # verdict table of a run (default: latest)
+repatch log [db]                          # page through a run's pipeline log
+repatch results [PR] [db]                 # locate the merged result trees
+repatch sql [db]                          # open a mysql shell on the run data
+repatch status                            # provisioning / health check
 ```
+
+### Running your own scenarios
+
+A *scenario* is one pull request, opened against a **source** repository
+(the mainline), integrated into a **target** repository (a fork of it).
+RePatch and plain `git cherry-pick` both attempt the integration and the
+conflicts each produces are recorded.
+
+```
+repatch week1 apache/kafka linkedin/kafka 16954
+#       ^db    ^source      ^target        ^PR number (on the source repo)
+```
+
+- `<db>` is any label (letters, digits, `_`); results land in the MySQL
+  database `repatch_<db>`, so `repatch verdicts week1`, `repatch log
+  week1`, `repatch results 16954 repatch_week1` all work afterwards.
+  Re-using a label starts over (the database is recreated) unless you
+  pass `--keep-db`, which resumes and skips scenarios already done.
+- Repositories may be written as `owner/repo`, `github.com/owner/repo`
+  or a full `https://github.com/owner/repo(.git)` URL.
+- Options: `--dry-run` (print the plan — which clones, which mode — and
+  exit), `--keep-db`, `--timeout SECONDS` (default 15 min × scenarios,
+  minimum 90 min), `--token TOKEN` (one-off override).
+- Any target other than `linkedin/kafka` is cloned at first use (with
+  the mainline fetched as a remote) and runs in **paper-parity mode** —
+  a minimal single-module IDE model, the same condition the paper gave
+  its non-kafka projects. `linkedin/kafka` targets use the fully
+  modeled kafka clone. Clones are cached in the data volume.
+
+**Batch runs from a CSV.** Column 1 = PR number, column 2 = source,
+column 3 = target; any further columns are ignored, so use them for
+your own notes. A header row, blank lines and `#` comment lines are
+skipped; duplicates collapse to one scenario.
+
+```csv
+pr,source,target,comment
+16954,apache/kafka,linkedin/kafka,the acceptance PR
+12363,apache/kafka,linkedin/kafka
+1187,DSpace/DSpace,ufal/clarin-dspace,non-kafka target -> parity mode
+```
+
+```
+repatch week1 scenarios.csv --dry-run     # check the plan
+repatch week1 scenarios.csv               # run it
+```
+
+**Getting a CSV into the container.** The container looks for the file
+as given, then under `/home/repatch/import`. Two ways to put it there:
+
+```bash
+# (a) share a host directory at start-up — every file in it is visible
+docker run -it --rm -v /path/to/my/csvs:/home/repatch/import \
+  -v repatch-data:/home/repatch/data -v repatch-results:/home/repatch/results \
+  --memory 10g --shm-size 1g repatch-headless
+#     inside:  repatch week1 scenarios.csv
+
+# (b) copy into a running container (find its name with `docker ps`)
+docker cp scenarios.csv <container-name>:/home/repatch/import/
+```
+
+On Windows PowerShell use `${PWD}` for the current directory, e.g.
+`-v ${PWD}\csvs:/home/repatch/import`. With compose, drop files into
+`containers/import/` — it is mounted automatically.
+
+### GitHub token
+
+Every scenario fetches PR metadata from the GitHub API; anonymous access
+is limited to 60 requests/hour and stalls any real run. The first
+interactive launch prompts for a token (create one at
+https://github.com/settings/tokens — no scopes are needed for public
+repositories). It is written to `/home/repatch/data/github-token`
+(mode 0600) in the **data volume**, so it survives container restarts
+and image rebuilds, is never printed, and is never baked into the image.
+
+```
+repatch token             # prompt (input hidden), verified against api.github.com
+repatch token --status    # is one configured?
+repatch token --clear     # forget it
+```
+
+Non-interactive alternatives: `-e RP_GITHUB_TOKEN=...` on `docker run`,
+or `--token` on a run command.
+
+### What persists
+
+Everything you care about lives in the two named volumes, not in the
+container: `repatch-data` holds every run database, the GitHub token,
+the kafka template and all cached clones and dependency caches;
+`repatch-results` holds merged result trees, run logs and validation
+datasets. `docker run --rm` containers come and go; the volumes stay
+until you `docker volume rm` them. Only one repatch container can hold
+the data volume at a time.
 
 ### The full paper run
 

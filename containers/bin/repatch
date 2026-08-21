@@ -190,9 +190,79 @@ case "$cmd" in
     banner
     ;;
 
+  token)
+    # repatch token            interactive prompt (input hidden)
+    # repatch token --status   is one configured?
+    # repatch token --clear    forget the saved token
+    # repatch token <value>    non-interactive set
+    case "${1:-}" in
+      --status) token_status; exit $? ;;
+      --clear)  rm -f "$TOKEN_FILE"; log "saved token removed"; exit 0 ;;
+      "")       prompt_token; exit $? ;;
+      -*)       log "unknown flag: $1"; exit 2 ;;
+      *)        save_token "$1"; log "token saved"; token_status; exit 0 ;;
+    esac
+    ;;
+
   *)
-    log "unknown command: $cmd"
-    banner
-    exit 2
+    # Custom run:  repatch <db> <source> <target> <pr>
+    #              repatch <db> <file.csv>
+    # <db> is any label (letters/digits/_); the run database is repatch_<db>.
+    if [[ "$cmd" == -* ]] || [ $# -lt 1 ]; then
+      log "unknown command: $cmd"
+      banner
+      exit 2
+    fi
+    db=$(db_name_for "$cmd") || exit 2
+    DRY=0; POS=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --dry-run)  DRY=1; shift ;;
+        --keep-db)  RP_KEEP_DB=1; shift ;;
+        --timeout)  RP_TIMEOUT="$2"; shift 2 ;;
+        --token)    RP_GITHUB_TOKEN="$2"; shift 2 ;;
+        -*)         log "unknown flag: $1 (see 'repatch help')"; exit 2 ;;
+        *)          POS+=("$1"); shift ;;
+      esac
+    done
+    mkdir -p "$SCENARIOS"
+    SCEN="$SCENARIOS/$db.txt"
+    if [ ${#POS[@]} -eq 1 ]; then
+      # CSV: as given, else under the import mount, else under results.
+      csv=""
+      for cand in "${POS[0]}" "$IMPORT/${POS[0]}" "$RESULTS/${POS[0]}"; do
+        [ -f "$cand" ] && { csv="$cand"; break; }
+      done
+      if [ -z "$csv" ]; then
+        log "file not found: ${POS[0]}"
+        log "copy it into the container first, e.g. on the host:"
+        log "  docker cp ${POS[0]} <container>:/home/repatch/import/"
+        log "or start the container with -v /path/to/your/dir:/home/repatch/import"
+        log "files currently in $IMPORT:"
+        ls -1 "$IMPORT" 2>/dev/null | sed 's/^/  /' || true
+        exit 2
+      fi
+      n=$(parse_scenarios "$csv" "$SCEN") || exit $?
+      log "parsed $n scenario(s) from $csv"
+    elif [ ${#POS[@]} -eq 3 ]; then
+      src="${POS[0]}"; tgt="${POS[1]}"; pr="${POS[2]}"
+      [[ "$pr" =~ ^[0-9]+$ ]] || { log "usage: repatch <db> <source> <target> <pr-number>  (pr '$pr' is not a number)"; exit 2; }
+      su=$(normalize_repo_url "$src") || { log "bad source repo '$src' (expected owner/repo)"; exit 2; }
+      tu=$(normalize_repo_url "$tgt") || { log "bad target repo '$tgt' (expected owner/repo)"; exit 2; }
+      echo "$su,$tu,$pr,MO" > "$SCEN"
+    else
+      log "usage: repatch <db> <source> <target> <pr>   |   repatch <db> <file.csv>"
+      exit 2
+    fi
+    log "run database: $db"
+    describe_scenarios "$SCEN"
+    token_status || true
+    if [ "$DRY" = 1 ]; then
+      log "dry run — nothing launched (scenario list: $SCEN)"
+      exit 0
+    fi
+    start_mysql || exit $?
+    RP_DB="$db" RP_SCENARIO_FILE="$SCEN" run_pipeline
+    exit $?
     ;;
 esac

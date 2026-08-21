@@ -11,6 +11,10 @@ CLONE="$CLONE_PARENT/linkedin-kafka"
 DATA_REL="data/run"                  # -PdataPath (resolved against $HOME)
 RESULTS="$HOME/results"              # volume
 LAST_RUN_FILE="$DATA/last-run"
+TOKEN_FILE="$DATA/github-token"      # saved GitHub token (data volume)
+IMPORT="$HOME/import"                # bind-mount point for user CSV files
+SCENARIOS="$DATA/scenarios"          # normalized scenario lists per run db
+KAFKA_FORK_URL="https://github.com/linkedin/kafka"   # the modeled target
 
 MYSQL_DATA="$DATA/mysql"             # MySQL lives in the same container;
 MYSQL_SOCK="$MYSQL_DATA/mysql.sock"  # its datadir persists in the volume
@@ -69,6 +73,142 @@ start_mysql() {
 shutdown_mysql() {
   [ -S "$MYSQL_SOCK" ] && mysqladmin --no-defaults -uroot -S "$MYSQL_SOCK" shutdown 2>/dev/null
   return 0
+}
+
+# ---------------------------------------------------------------- GitHub token
+# Every scenario fetches PR metadata from api.github.com; anonymous access
+# (60 requests/hour) stalls any real run. The token is kept ONLY in the
+# data volume (mode 0600) and is never echoed.
+load_token() {
+  if [ -z "${RP_GITHUB_TOKEN:-}" ] && [ -s "$TOKEN_FILE" ]; then
+    RP_GITHUB_TOKEN=$(head -n1 "$TOKEN_FILE" | tr -d '[:space:]')
+  fi
+  [ -n "${RP_GITHUB_TOKEN:-}" ]
+}
+
+save_token() {
+  mkdir -p "$DATA"
+  ( umask 077; printf '%s
+' "$1" > "$TOKEN_FILE" )
+}
+
+# Best-effort check against the GitHub API: 0 ok, 1 rejected, 2 unreachable.
+check_token() {
+  local code
+  code=$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
+           -H "Authorization: token $1" https://api.github.com/rate_limit 2>/dev/null)
+  case "$code" in 200) return 0 ;; 401) return 1 ;; *) return 2 ;; esac
+}
+
+token_status() {
+  if load_token; then
+    local src="saved in the data volume"
+    if [ ! -s "$TOKEN_FILE" ] || [ "$(head -n1 "$TOKEN_FILE" | tr -d '[:space:]')" != "$RP_GITHUB_TOKEN" ]; then
+      src="from the RP_GITHUB_TOKEN environment (not saved)"
+    fi
+    log "GitHub token: present — $src (${#RP_GITHUB_TOKEN} chars, ends ...${RP_GITHUB_TOKEN: -4})"
+  else
+    log "GitHub token: NONE — anonymous GitHub access is 60 requests/hour; set one with 'repatch token'"
+    return 1
+  fi
+}
+
+# Interactive prompt (input hidden). Returns 0 if a token was saved.
+prompt_token() {
+  local t
+  echo
+  echo "A GitHub personal access token is needed to fetch pull-request metadata"
+  echo "(anonymous access is limited to 60 requests/hour and stalls real runs)."
+  echo "Create one at https://github.com/settings/tokens — no scopes are needed"
+  echo "for public repositories. It is stored only in this container's data"
+  echo "volume and survives restarts; change it any time with 'repatch token'."
+  echo
+  read -rs -p "GitHub token (input hidden; press Enter to skip): " t
+  echo
+  t=$(printf '%s' "$t" | tr -d '[:space:]')
+  if [ -z "$t" ]; then
+    log "no token saved — runs will use anonymous access until you run 'repatch token'"
+    return 1
+  fi
+  check_token "$t"
+  case $? in
+    0) log "token verified with api.github.com" ;;
+    1) log "WARNING: GitHub rejected this token (401) — saved anyway; replace it with 'repatch token'" ;;
+    2) log "could not reach api.github.com to verify the token — saved anyway" ;;
+  esac
+  save_token "$t"
+  RP_GITHUB_TOKEN="$t"; export RP_GITHUB_TOKEN
+  log "token saved"
+  return 0
+}
+
+# ------------------------------------------------------------ repo addressing
+# Accepts owner/repo, github.com/owner/repo, https://github.com/owner/repo,
+# git@github.com:owner/repo(.git) -> https://github.com/owner/repo
+normalize_repo_url() {
+  local u="$1"
+  u="${u#"${u%%[![:space:]]*}"}"; u="${u%"${u##*[![:space:]]}"}"
+  u="${u%/}"; u="${u%.git}"
+  u="${u#git@github.com:}"
+  u="${u#https://}"; u="${u#http://}"; u="${u#www.}"; u="${u#github.com/}"
+  [[ "$u" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
+  echo "https://github.com/$u"
+}
+
+# RepoNaming.directoryName in bash: <Owner>-<RepoName> (keep in sync).
+repo_dir_name() {
+  local u; u=$(normalize_repo_url "$1") || return 1
+  u="${u#https://github.com/}"
+  echo "${u%%/*}-${u##*/}"
+}
+
+# Run-database name for a user-chosen label: MySQL-safe and prefixed with
+# repatch_ so `repatch runs` lists it.
+db_name_for() {
+  local n="${1//-/_}"
+  [[ "$n" =~ ^[A-Za-z0-9_]{1,55}$ ]] || { log "bad database name '$1' (letters, digits, _ only)"; return 2; }
+  case "$n" in repatch*) ;; *) n="repatch_$n" ;; esac
+  echo "$n"
+}
+
+# parse_scenarios CSV OUT — user CSV: column 1 = PR number, column 2 =
+# source repo (the mainline the PR was opened against), column 3 = target
+# repo (the fork receiving the patch); further columns are ignored (free
+# for comments). A header row (non-numeric first column) and blank or
+# '#' lines are skipped. Writes pipeline lines "<source>,<target>,<pr>,MO"
+# (duplicates collapsed, order kept) and prints the scenario count.
+parse_scenarios() {
+  local csv="$1" out="$2" ln=0 first=1 line pr src tgt rest su tu
+  : > "$out.tmp"
+  while IFS= read -r line || [ -n "$line" ]; do
+    ln=$((ln+1)); line="${line%$'\r'}"
+    [[ -z "${line//[[:space:],]/}" || "$line" == \#* ]] && continue
+    IFS=',' read -r pr src tgt rest <<< "$line"
+    pr="${pr//[[:space:]\"]/}"; src="${src//[[:space:]\"]/}"; tgt="${tgt//[[:space:]\"]/}"
+    if ! [[ "$pr" =~ ^[0-9]+$ ]]; then
+      if [ "$first" = 1 ]; then first=0; continue; fi      # header row
+      log "$csv line $ln: column 1 must be a PR number, got '$pr'"; rm -f "$out.tmp"; return 2
+    fi
+    first=0
+    su=$(normalize_repo_url "$src") || { log "$csv line $ln: bad source repo '$src' (expected owner/repo)"; rm -f "$out.tmp"; return 2; }
+    tu=$(normalize_repo_url "$tgt") || { log "$csv line $ln: bad target repo '$tgt' (expected owner/repo)"; rm -f "$out.tmp"; return 2; }
+    echo "$su,$tu,$pr,MO" >> "$out.tmp"
+  done < "$csv"
+  awk '!seen[$0]++' "$out.tmp" > "$out"; rm -f "$out.tmp"
+  local n; n=$(grep -c . "$out")
+  [ "$n" -gt 0 ] || { log "no scenarios found in $csv"; return 2; }
+  echo "$n"
+}
+
+# Human summary of a normalized scenario file.
+describe_scenarios() {
+  local f="$1" pair n tgt mode
+  log "scenarios: $(grep -c . "$f")"
+  cut -d, -f1,2 "$f" | awk '!s[$0]++' | while IFS=',' read -r src tgt; do
+    n=$(grep -c "^$src,$tgt," "$f")
+    if [ "$tgt" = "$KAFKA_FORK_URL" ]; then mode="modeled kafka clone"; else mode="paper-parity mode (single-module model)"; fi
+    log "  ${src#https://github.com/} -> ${tgt#https://github.com/}: $n PR(s), $mode, checkout $(repo_dir_name "$tgt")"
+  done
 }
 
 # One-time template provisioning: clone the evaluation fork, fetch the
@@ -147,23 +287,40 @@ provision_aux_clones() {
     "apache-kafka|https://github.com/apache/kafka|kafka|https://github.com/linkedin/kafka" \
   ; do
     IFS='|' read -r DIR FORK RNAME RURL <<< "$SPEC"
-    local D="$CLONE_PARENT/$DIR"
-    if [ ! -d "$D/.git" ]; then
-      log "provisioning $DIR (one-time clone + mainline fetch)"
-      rm -rf "$D"
-      git clone "$FORK" "$D" \
-        || { log "ERROR: clone of $FORK failed — aborting before a partial run"; return 7; }
-      git -C "$D" remote add "$RNAME" "$RURL"
-      local T
-      for T in 1 2 3; do
-        git -C "$D" fetch "$RNAME" && break
-        [ "$T" = 3 ] && { log "ERROR: fetch of $RURL failed 3x — aborting"; return 7; }
-        sleep 10
-      done
-    fi
-    if [ ! -d "$D/.idea" ]; then
-      mkdir -p "$D/.idea"
-      cat > "$D/.idea/modules.xml" <<EOF
+    provision_clone "$DIR" "$FORK" "$RURL" || return $?
+  done
+}
+
+# provision_clone DIR FORK_URL MAINLINE_URL — clone the fork into
+# $CLONE_PARENT/DIR, add the mainline as a remote named after its repo
+# (the pipeline's remoteProjectName), fetch it, and lay down the minimal
+# single-module .idea if none exists. Idempotent; cached in the volume.
+provision_clone() {
+  local DIR="$1" FORK="$2" RURL="$3" RNAME="${3##*/}"
+  local D="$CLONE_PARENT/$DIR"
+  if [ "$FORK" = "$KAFKA_FORK_URL" ]; then
+    return 0   # the modeled kafka clone comes from the template
+  fi
+  mkdir -p "$CLONE_PARENT"
+  if [ ! -d "$D/.git" ]; then
+    log "provisioning $DIR (one-time clone of $FORK + fetch of $RURL)"
+    rm -rf "$D"
+    git clone "$FORK" "$D" \
+      || { log "ERROR: clone of $FORK failed — aborting before a partial run"; return 7; }
+    git -C "$D" remote add "$RNAME" "$RURL"
+    local T
+    for T in 1 2 3; do
+      git -C "$D" fetch "$RNAME" && break
+      [ "$T" = 3 ] && { log "ERROR: fetch of $RURL failed 3x — aborting"; return 7; }
+      sleep 10
+    done
+  elif ! git -C "$D" remote get-url "$RNAME" >/dev/null 2>&1; then
+    git -C "$D" remote add "$RNAME" "$RURL" && git -C "$D" fetch "$RNAME" \
+      || { log "ERROR: could not add/fetch mainline $RURL on $DIR"; return 7; }
+  fi
+  if [ ! -d "$D/.idea" ]; then
+    mkdir -p "$D/.idea"
+    cat > "$D/.idea/modules.xml" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ProjectModuleManager">
@@ -173,7 +330,7 @@ provision_aux_clones() {
   </component>
 </project>
 EOF
-      cat > "$D/$DIR.iml" <<EOF
+    cat > "$D/$DIR.iml" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <module type="JAVA_MODULE" version="4">
   <component name="NewModuleRootManager" inherit-compiler-output="true">
@@ -186,9 +343,8 @@ EOF
   </component>
 </module>
 EOF
-      log "wrote minimal single-module .idea for $DIR"
-    fi
-  done
+    log "wrote minimal single-module .idea for $DIR"
+  fi
 }
 
 # Verdict tables for one run database.
@@ -223,6 +379,9 @@ print_verdicts() {
 # One full pipeline run, parameterized by RP_* environment variables
 # (see bin/repatch for the interactive flags that set them):
 #   RP_PRS       comma-separated kafka PR numbers (overrides the dataset)
+#   RP_SCENARIO_FILE  normalized scenario list "<source>,<target>,<pr>,MO"
+#                (from `repatch <db> <source> <target> <pr>` / a CSV);
+#                overrides RP_PRS and the dataset
 #   RP_DATASET   sample | complete           (default: sample)
 #   RP_DB        run database name           (default: derived from scenario)
 #   RP_KEEP_DB=1 reuse RP_DB instead of dropping and recreating it
@@ -230,20 +389,43 @@ print_verdicts() {
 #   RP_GOLDEN_CHECK=1  diff a default-sample run against the golden baseline
 run_pipeline() {
   RP_DATASET="${RP_DATASET:-sample}"
-  local PARITY=0 EVAL_PROJECT="linkedin/kafka"
-  # A complete run processes 477 scenarios; give it two days by default.
-  if [ "$RP_DATASET" = "complete" ] && [ -z "${RP_PRS:-}" ]; then
-    RP_TIMEOUT="${RP_TIMEOUT:-172800}"
+  local PARITY=0 EVAL_PROJECT="linkedin/kafka" NEED_KAFKA=1
+  local SD="$RP/src/main/resources/sample_data"
+
+  # `repatch run <PR...>` is the kafka shortcut: materialize it as a
+  # scenario file so every custom run takes the same path.
+  if [ -n "${RP_PRS:-}" ] && [ -z "${RP_SCENARIO_FILE:-}" ]; then
+    mkdir -p "$SCENARIOS"
+    RP_SCENARIO_FILE="$SCENARIOS/prs-${RP_PRS//,/_}.txt"; RP_SCENARIO_FILE="${RP_SCENARIO_FILE:0:200}"
+    : > "$RP_SCENARIO_FILE"
+    local PR
+    IFS=',' read -ra PRLIST <<< "$RP_PRS"
+    for PR in "${PRLIST[@]}"; do
+      echo "https://github.com/apache/kafka,$KAFKA_FORK_URL,${PR},MO" >> "$RP_SCENARIO_FILE"
+    done
+  fi
+
+  if [ -n "${RP_SCENARIO_FILE:-}" ]; then
+    local N; N=$(grep -c . "$RP_SCENARIO_FILE")
+    # ~15 min per scenario, never less than the sample default.
+    RP_TIMEOUT="${RP_TIMEOUT:-$(( N * 900 > 5400 ? N * 900 : 5400 ))}"
+    # The modeled kafka template is only needed when linkedin/kafka is a target.
+    grep -q ",$KAFKA_FORK_URL," "$RP_SCENARIO_FILE" || NEED_KAFKA=0
+  elif [ "$RP_DATASET" = "complete" ]; then
+    RP_TIMEOUT="${RP_TIMEOUT:-172800}"   # 477 scenarios: two days
   else
     RP_TIMEOUT="${RP_TIMEOUT:-5400}"
   fi
 
-  # GitHub token (strongly recommended for large runs: every patch fetches
-  # PR metadata, and anonymous access is limited to 60 requests/hour).
+  # GitHub token: saved in the data volume by the first-launch prompt /
+  # `repatch token`, or supplied via --token / RP_GITHUB_TOKEN.
+  load_token || true
   if [ -n "${RP_GITHUB_TOKEN:-}" ]; then
     printf 'OAuthToken=%s\n' "$RP_GITHUB_TOKEN" \
       > "$RP/src/main/resources/github-oauth.properties"
-    log "GitHub token installed from RP_GITHUB_TOKEN"
+    log "GitHub token installed"
+  else
+    log "WARNING: no GitHub token — anonymous API access (60 req/h) will stall runs; see 'repatch token'"
   fi
   if [ -z "${RP_DB:-}" ]; then
     if [ -n "${RP_PRS:-}" ]; then
@@ -253,7 +435,11 @@ run_pipeline() {
     fi
   fi
 
-  ensure_template || return $?
+  if [ "$NEED_KAFKA" = 1 ]; then
+    ensure_template || return $?
+  else
+    log "no linkedin/kafka target in this run — skipping the kafka template"
+  fi
 
   # Hermetic IDE state: cold-start the sandbox system dirs (persistent
   # VFS / workspace caches from a previous run reconcile against the
@@ -263,12 +449,14 @@ run_pipeline() {
     [ -d "$SYS" ] && rm -rf "$SYS" && log "wiped sandbox system $SYS"
   done
 
-  log "refreshing working clone from template"
   mkdir -p "$CLONE_PARENT"
   # pre-naming-spec working copy; recreated from the template as linkedin-kafka
   [ -d "$CLONE_PARENT/kafka" ] && rm -rf "$CLONE_PARENT/kafka" && log "removed legacy clone dir kafka"
-  rm -rf "$CLONE"
-  cp -a "$TEMPLATE" "$CLONE"
+  if [ "$NEED_KAFKA" = 1 ]; then
+    log "refreshing working clone from template"
+    rm -rf "$CLONE"
+    cp -a "$TEMPLATE" "$CLONE"
+  fi
 
   # Auxiliary clones (non-kafka projects auto-cloned by a previous
   # complete run) persist in the volume; clear any leftover merge state
@@ -285,19 +473,22 @@ run_pipeline() {
   done
 
   local GRADLE_DATASET_ARGS=(-PdataSet="$RP_DATASET")
-  local SD="$RP/src/main/resources/sample_data"
-  if [ -n "${RP_PRS:-}" ]; then
-    # Scenario override: rewrite the sample_data resources (the
-    # container's repo copy is disposable) and run in sample mode.
-    local PR
-    : > "$SD/repatch_integration_patches"
-    IFS=',' read -ra PRLIST <<< "$RP_PRS"
-    for PR in "${PRLIST[@]}"; do
-      echo "https://github.com/apache/kafka,https://github.com/linkedin/kafka,${PR},MO" >> "$SD/repatch_integration_patches"
-    done
-    echo "https://github.com/apache/kafka,https://github.com/linkedin/kafka" > "$SD/repatch_integration_projects"
+  if [ -n "${RP_SCENARIO_FILE:-}" ]; then
+    # Custom scenarios: rewrite the sample_data resources (the container's
+    # repo copy is disposable) and run in sample mode. Every non-kafka
+    # target is cloned at first use with the minimal single-module model
+    # (paper-parity mode); linkedin/kafka uses the modeled template.
+    cp "$RP_SCENARIO_FILE" "$SD/repatch_integration_patches"
+    cut -d, -f1,2 "$SD/repatch_integration_patches" | awk '!s[$0]++' > "$SD/repatch_integration_projects"
     GRADLE_DATASET_ARGS=(-PdataSet=sample)
-    log "scenario override: PRs [$RP_PRS]"
+    EVAL_PROJECT="github.com"
+    describe_scenarios "$RP_SCENARIO_FILE"
+    local SRC TGT
+    while IFS=',' read -r SRC TGT; do
+      [ "$TGT" = "$KAFKA_FORK_URL" ] && continue
+      PARITY=1
+      provision_clone "$(repo_dir_name "$TGT")" "$TGT" "$SRC" || return $?
+    done < "$SD/repatch_integration_projects"
   elif [ "$RP_DATASET" = "complete" ]; then
     # The paper's complete list: 478 scenario lines (477 distinct) across
     # 6 repository families in 10 direction pairs — ALL of them run.
@@ -435,9 +626,9 @@ run_pipeline() {
     if [ "$PARITY" = "1" ]; then
       # Paper-parity runs include model-less projects where the engine
       # is expected to partially no-op; report loudly but don't fail.
-      log "NOTE: $VACUOUS vacuous-inversion event(s) — expected for the"
-      log "model-less non-kafka projects in a complete run; if any occur"
-      log "during KAFKA scenarios that is a real problem (see $RUNLOG)"
+      log "NOTE: $VACUOUS vacuous-inversion event(s) — expected for"
+      log "model-less non-kafka projects (paper-parity mode); if any occur"
+      log "during linkedin/kafka scenarios that is a real problem (see $RUNLOG)"
     else
       log "WARNING: $VACUOUS vacuous-inversion event(s) — RePatch degraded to plain cherry-pick for those scenarios (see $RUNLOG)"
       RC=$(( RC == 0 ? 42 : RC ))
@@ -460,32 +651,41 @@ banner() {
   cat <<'EOF'
 ============================================================
  RePatch 2.0 — interactive evaluation container
- MySQL runs inside this container; databases and the kafka
- clone persist in the 'data' volume across sessions.
+ MySQL runs inside this container; databases, clones and
+ your GitHub token persist in the 'data' volume.
 
-   repatch run                    golden 5-patch sample set
-   repatch run 16954              one kafka PR (or a list)
-   repatch run --dataset complete the paper's FULL evaluation: 477
-                                  scenarios (393 kafka modeled + 84
-                                  paper-parity; ~15-30h; use --token
-                                  <github-token>, resume with --keep-db)
-   repatch run --golden-check     sample + golden baseline diff
+   repatch run                    golden 5-patch sample (smoke test)
+   repatch run --golden-check     sample + diff vs the golden baseline
+   repatch run --dataset complete the paper's FULL evaluation (477
+                                  scenarios, ~15-30h; resume --keep-db)
+
+   repatch <db> <source> <target> <pr>
+                                  run ONE scenario: PR <pr> opened
+                                  against <source> (owner/repo), applied
+                                  to the fork <target>, results in
+                                  database repatch_<db>
+   repatch <db> <file.csv>        run every scenario in a CSV: columns
+                                  pr, source, target (extra columns are
+                                  ignored). Put files in /home/repatch/
+                                  import (docker -v or docker cp).
+        options: --dry-run (show the plan only) --keep-db (resume)
+                 --timeout SECONDS --token TOKEN
+
+   repatch token                  set / verify the GitHub token
+                                  (--status, --clear)
    repatch runs                   list past run databases
    repatch verdicts [db]          verdict table of a run
    repatch log [db]               page through a run's log
-   repatch results [PR]           locate merged result trees
+   repatch results [PR] [db]      locate merged result trees
    repatch validate [--db NAME]   validation study levels 2-3: build +
-                                  test baseline and RePatch states of
-                                  every conflict-free case (flags:
-                                  --prs n,n --test-scope auto|module|
+                                  test baseline and RePatch states
+                                  (--prs n,n --test-scope auto|module|
                                   full|none --jdk 8|11|17 --limit N
                                   --records --status --redo)
    repatch report [db]            study tables/figures from the dataset
    repatch sql [db]               open a mysql shell
    repatch status                 provisioning / health check
    repatch help                   this text
-
- Type `exit` to leave (MySQL shuts down cleanly).
 ============================================================
 EOF
 }
