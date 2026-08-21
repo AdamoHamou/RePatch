@@ -6,51 +6,171 @@ on Ubuntu 24.04, so it works the same on virtually any machine with
 Docker. No sidecar containers, no compose networking: start it, get a
 shell, run evaluations.
 
+Contents: [Requirements](#requirements) · [Build](#1-build-the-image-once) ·
+[Launch](#2-launch) · [Command reference](#3-command-reference) ·
+[Your own scenarios](#4-running-your-own-scenarios) ·
+[GitHub token](#5-github-token) · [Browsing databases](#6-browsing-the-databases) ·
+[What persists](#7-what-persists) · [Troubleshooting](#8-troubleshooting) ·
+[Full paper run](#the-full-paper-run) · [Validation study](#the-validation-study-build--test-stages)
+
 ## Requirements
 
-- Docker (Linux) or Docker Desktop (Windows/macOS; WSL2 backend on
-  Windows).
+- Docker (Linux) or Docker Desktop (Windows/macOS; WSL 2 backend on
+  Windows). **Docker Desktop must be running** before any `docker`
+  command works.
 - ~20 GB free disk (5.5 GB image + build layers + kafka clone,
   dependency caches, and MySQL data in a volume) and ~10 GB RAM
-  available to Docker (on Windows, set this in Docker Desktop →
-  Settings → Resources, or `.wslconfig`).
+  available to Docker (Docker Desktop → Settings → Resources, or
+  `%UserProfile%\.wslconfig` on Windows).
+- A GitHub personal access token with **no scopes** (see [§5](#5-github-token)).
 
-## Quick start
+## 1. Build the image (once)
+
+The image is built locally from the repository — it is not stored in
+git, so a fresh clone always needs one build (~10 min, downloads all
+dependencies). Rebuild only after pulling changes to `containers/` or
+the pipeline source.
 
 ```bash
-# from the repository root
+git clone -b upgrade-2.0/spec1-conflicting-files https://github.com/AdamoHamou/RePatch.git
+cd RePatch
 docker build -f containers/Dockerfile -t repatch-headless .
+```
 
+Check: `docker images repatch-headless` lists the image (Docker Desktop →
+**Images** tab; nothing appears under *Containers* until you run it).
+
+## 2. Launch
+
+Two ways to run it. Both use the same two named volumes, so databases,
+clones and your token are shared and persist either way.
+
+### (a) One-off interactive session
+
+```bash
 docker run -it --rm \
   -v repatch-data:/home/repatch/data \
   -v repatch-results:/home/repatch/results \
+  -v "$PWD/containers/import":/home/repatch/import \
   --memory 10g --shm-size 1g \
   repatch-headless
 ```
 
-That drops you into a shell inside the container with MySQL already
-running locally. **On first launch it asks for a GitHub token** (input
-hidden, stored only in the `repatch-data` volume — see below). From
-there:
+Windows PowerShell (one line, or with backticks):
 
-```
-repatch run                               # golden 5-patch sample (smoke test)
-repatch run --golden-check                # sample + diff vs the golden baseline
-repatch run --dataset complete            # the paper's full evaluation (477)
-
-repatch <db> <source> <target> <pr>       # ONE scenario of your choosing
-repatch <db> <file.csv>                   # every scenario listed in a CSV
-
-repatch token                             # set / verify the GitHub token
-repatch runs                              # list past run databases
-repatch verdicts [db]                     # verdict table of a run (default: latest)
-repatch log [db]                          # page through a run's pipeline log
-repatch results [PR] [db]                 # locate the merged result trees
-repatch sql [db]                          # open a mysql shell on the run data
-repatch status                            # provisioning / health check
+```powershell
+docker run -it --rm -v repatch-data:/home/repatch/data -v repatch-results:/home/repatch/results -v ${PWD}\containers\import:/home/repatch/import --memory 10g --shm-size 1g repatch-headless
 ```
 
-### Running your own scenarios
+You get a shell with MySQL already running. The first launch asks for
+your GitHub token. `exit` leaves; `--rm` discards the container but the
+volumes keep everything.
+
+### (b) Always-on container + terminals on demand (recommended for a course)
+
+Start the container once in the background with a keep-alive command,
+then open as many terminals into it as you like with `docker exec`:
+
+```powershell
+docker network create repatch-net      # one-time
+
+docker run -d --name repatch --restart unless-stopped --network repatch-net `
+  -e RP_DB_BIND=0.0.0.0 `
+  -v repatch-data:/home/repatch/data -v repatch-results:/home/repatch/results `
+  -v ${PWD}\containers\import:/home/repatch/import `
+  --memory 10g --shm-size 1g `
+  repatch-headless sleep infinity
+
+docker exec -it repatch bash           # a terminal, any time (or Docker Desktop → Exec tab)
+```
+
+(Linux/macOS: same command with `\` line continuations and
+`"$PWD/containers/import"`.) The first time, run `repatch token` inside
+to save your GitHub token — the automatic prompt only fires in mode (a).
+`--restart unless-stopped` brings it back whenever Docker starts;
+`docker stop repatch` / `docker start repatch` control it deliberately.
+`-e RP_DB_BIND=0.0.0.0` lets phpMyAdmin reach MySQL (see [§6](#6-browsing-the-databases)).
+
+**Only one repatch container can hold the data volume at a time** — with
+(b) running, use `docker exec`, don't start a second `docker run`.
+
+### Compose shortcut
+
+```bash
+cd containers
+docker compose build
+docker compose run --rm headless                     # same as (a); import/ mounted automatically
+docker compose run --rm headless repatch run 16954   # one-shot command
+```
+
+### Non-interactive / CI
+
+Any arguments after the image name run as-is (MySQL is started first);
+with **no TTY and no arguments** the container performs one default
+sample run, so the old one-shot workflow still works:
+
+```bash
+docker run --rm -v repatch-data:/home/repatch/data repatch-headless \
+  repatch run --golden-check          # exit code ≠ 0 on baseline mismatch
+```
+
+## 3. Command reference
+
+Everything is driven by the `repatch` CLI inside the container
+(`repatch help` prints this list).
+
+### Running evaluations
+
+| Command | What it does |
+|---|---|
+| `repatch run` | The golden 5-patch kafka sample — the smoke test. First run provisions the kafka evaluation clone (one-time ~500 MB + dependency download). |
+| `repatch run --golden-check` | Sample run + diff against the golden baseline verdicts; non-zero exit on mismatch. |
+| `repatch run 16954` / `repatch run 12363,15889` | Kafka shortcut: the given apache/kafka PR(s) into linkedin/kafka. Database `repatch_pr<N>`. |
+| `repatch run --dataset complete` | The paper's full evaluation, all 477 scenarios (~15–30 h, ~150 GB). See [The full paper run](#the-full-paper-run). |
+| `repatch <db> <source> <target> <pr>` | **One scenario of your choosing** — PR `<pr>` opened against `<source>`, integrated into the fork `<target>`; results in database `repatch_<db>`. |
+| `repatch <db> <file.csv>` | **Every scenario listed in a CSV** (columns: pr, source, target; extra columns ignored). See [§4](#4-running-your-own-scenarios). |
+
+Flags for `run` and custom runs: `--dry-run` (custom runs: print the
+plan and exit), `--keep-db` (resume — scenarios already done are
+skipped), `--timeout SECONDS`, `--token TOKEN` (one-off override),
+`--db NAME` (`run` only: name the database). `run` also accepts
+`--fork URL` / `--mainline URL` to provision a different modeled clone.
+
+Exit codes: `0` ok · `42` run completed but at least one
+vacuous-inversion event (engine degraded to plain cherry-pick — check
+the log) · `3` pipeline exited before every scenario was recorded ·
+`124` timeout · `2` usage error.
+
+### Inspecting results
+
+| Command | What it does |
+|---|---|
+| `repatch runs` | List every run database with patches done / total. |
+| `repatch verdicts [db]` | Verdict table of a run — conflicting files / conflict blocks / conflicting LOC for RePatch and git cherry-pick per PR, plus clean cherry-picks. Default: the latest run. |
+| `repatch log [db]` | Page through the run's full pipeline log (`less`). |
+| `repatch results [PR] [db]` | Locate the merged result trees on disk for a PR (conflict markers left in place; `repatch-state.bundle` holds the full RePatch-produced state). No PR: list the results directory. |
+| `repatch sql [db]` | Open a `mysql` shell on the run database (`SHOW TABLES;`, `SELECT * FROM merge_result;` …). |
+| `repatch status` | Health check: MySQL up? kafka template provisioned? volume sizes, number of run databases. |
+
+### Validation study (build + test stages)
+
+| Command | What it does |
+|---|---|
+| `repatch validate [--db NAME]` | For every conflict-free case of a run: build and test the baseline target and the RePatch-produced state; classify VALID / INTEGRATION_FAIL / BUILD_FAIL / TEST_FAIL / INCONCLUSIVE. Options `--prs n,n`, `--cases id,id`, `--test-scope auto\|module\|full\|none`, `--jdk 8\|11\|17`, `--limit N`, `--records`, `--status`, `--redo`. |
+| `repatch report [db]` | Funnel/outcome tables, figures and summary generated from the dataset. |
+
+Details in [The validation study](#the-validation-study-build--test-stages).
+
+### Token
+
+| Command | What it does |
+|---|---|
+| `repatch token` | Prompt for a GitHub token (input hidden), verify it, save it. |
+| `repatch token --status` | Is one configured, and where from? |
+| `repatch token --clear` | Forget the saved token. |
+| `repatch token <value>` | Non-interactive set. |
+
+## 4. Running your own scenarios
 
 A *scenario* is one pull request, opened against a **source** repository
 (the mainline), integrated into a **target** repository (a fork of it).
@@ -69,9 +189,8 @@ repatch week1 apache/kafka linkedin/kafka 16954
   pass `--keep-db`, which resumes and skips scenarios already done.
 - Repositories may be written as `owner/repo`, `github.com/owner/repo`
   or a full `https://github.com/owner/repo(.git)` URL.
-- Options: `--dry-run` (print the plan — which clones, which mode — and
-  exit), `--keep-db`, `--timeout SECONDS` (default 15 min × scenarios,
-  minimum 90 min), `--token TOKEN` (one-off override).
+- `--dry-run` prints the plan — which clones, which mode — and exits.
+  Default timeout: 15 min × scenarios, minimum 90 min.
 - Any target other than `linkedin/kafka` is cloned at first use (with
   the mainline fetched as a remote) and runs in **paper-parity mode** —
   a minimal single-module IDE model, the same condition the paper gave
@@ -99,50 +218,96 @@ repatch week1 scenarios.csv               # run it
 as given, then under `/home/repatch/import`. Two ways to put it there:
 
 ```bash
-# (a) share a host directory at start-up — every file in it is visible
-docker run -it --rm -v /path/to/my/csvs:/home/repatch/import \
-  -v repatch-data:/home/repatch/data -v repatch-results:/home/repatch/results \
-  --memory 10g --shm-size 1g repatch-headless
+# (a) the launch commands above already share ./containers/import — just
+#     drop files in that folder on the host
 #     inside:  repatch week1 scenarios.csv
 
-# (b) copy into a running container (find its name with `docker ps`)
-docker cp scenarios.csv <container-name>:/home/repatch/import/
+# (b) copy into a running container
+docker cp scenarios.csv repatch:/home/repatch/import/
 ```
 
-On Windows PowerShell use `${PWD}` for the current directory, e.g.
-`-v ${PWD}\csvs:/home/repatch/import`. With compose, drop files into
-`containers/import/` — it is mounted automatically.
+If a file isn't found, the CLI prints both recipes and lists what is
+currently in the import folder.
 
-### GitHub token
+## 5. GitHub token
 
 Every scenario fetches PR metadata from the GitHub API; anonymous access
-is limited to 60 requests/hour and stalls any real run. The first
-interactive launch prompts for a token (create one at
-https://github.com/settings/tokens — no scopes are needed for public
-repositories). It is written to `/home/repatch/data/github-token`
+is limited to 60 requests/hour and stalls any real run. Create a token
+at https://github.com/settings/tokens — **no scopes / permissions are
+needed** (classic token with every box unchecked, or a fine-grained
+token with public-repository read access): the pipeline only reads
+public PR metadata, and any token lifts the limit to 5,000 requests/hour.
+
+The first interactive launch (mode (a)) prompts for it; in mode (b) run
+`repatch token` once. It is written to `/home/repatch/data/github-token`
 (mode 0600) in the **data volume**, so it survives container restarts
 and image rebuilds, is never printed, and is never baked into the image.
-
-```
-repatch token             # prompt (input hidden), verified against api.github.com
-repatch token --status    # is one configured?
-repatch token --clear     # forget it
-```
-
 Non-interactive alternatives: `-e RP_GITHUB_TOKEN=...` on `docker run`,
 or `--token` on a run command.
 
-### What persists
+## 6. Browsing the databases
+
+Inside the container: `repatch runs`, `repatch verdicts`, `repatch sql`.
+
+In a browser with **phpMyAdmin** — a second container on the private
+docker network (requires the repatch container started with
+`-e RP_DB_BIND=0.0.0.0` and `--network repatch-net`, as in launch mode (b)):
+
+```powershell
+docker run -d --name repatch-pma --restart unless-stopped --network repatch-net -p 8080:80 `
+  -e PMA_HOST=repatch -e PMA_USER=repatch -e PMA_PASSWORD=repatch phpmyadmin
+```
+
+Browse http://localhost:8080 — every run database (`repatch_sample`,
+`repatch_week1`, …) is listed on the left; it logs in automatically.
+No MySQL port touches the host; the two containers talk over the
+private network. MySQL is live only while the `repatch` container is
+running (phpMyAdmin shows a connection error otherwise; the data is
+safe in the volume).
+
+Host tools (MySQL Workbench, DBeaver) instead: add
+`-p 127.0.0.1:3307:3306` to the repatch container and connect to
+`127.0.0.1:3307`, user `repatch`, password `repatch`.
+
+Take it anywhere: `mysqldump` a run database from inside the container
+(`mysqldump -h127.0.0.1 -urepatch -prepatch repatch_week1 > /home/repatch/results/week1.sql`)
+and `docker cp repatch:/home/repatch/results/week1.sql .`
+
+## 7. What persists
 
 Everything you care about lives in the two named volumes, not in the
 container: `repatch-data` holds every run database, the GitHub token,
 the kafka template and all cached clones and dependency caches;
 `repatch-results` holds merged result trees, run logs and validation
-datasets. `docker run --rm` containers come and go; the volumes stay
-until you `docker volume rm` them. Only one repatch container can hold
-the data volume at a time.
+datasets (Docker Desktop → **Volumes** tab). Containers — including
+`--rm` ones — come and go; the volumes stay until you `docker volume rm`
+them, and they survive image rebuilds. Each run gets its own database,
+so results accumulate and stay browsable across sessions.
 
-### The full paper run
+## 8. Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| `error during connect: ... dockerDesktopLinuxEngine: The system cannot find the file specified` | Docker Desktop isn't running. Start it, wait for "Docker Desktop is running", check `docker version` shows a *Server* section. |
+| `docker build` finished but nothing in Docker Desktop | Look under **Images**, not Containers — a container only exists once you `docker run`. |
+| `Conflict. The container name "/repatch" is already in use` | A previous container with that name exists (possibly in *Created* state). `docker rm -f repatch`, then rerun. Containers hold no data. |
+| phpMyAdmin: "cannot connect to MySQL server" | The `repatch` container isn't up (`docker ps`), or was started without `-e RP_DB_BIND=0.0.0.0` / `--network repatch-net`. On a fresh volume, wait ~20 s for MySQL to initialize. |
+| Run stalls on "fetch attempt" / PRs skipped | No GitHub token (60 req/h anonymous). `repatch token --status`, then `repatch token`. |
+| Exit code 42 | At least one vacuous inversion — RePatch degraded to a plain cherry-pick for a scenario. Expected for non-kafka (parity-mode) targets; a problem on kafka. See `repatch log`. |
+| Killed / exit 137 on long runs | Out of memory. Raise `--memory` (20 g for the full paper run) and Docker Desktop's resource limit. Resume with `--keep-db`. |
+| File not found for `repatch <db> file.csv` | Put the file in `containers/import/` on the host (mounted at `/home/repatch/import`) or `docker cp` it there; the error message lists what's in the folder. |
+| Windows: `-v ${PWD}\containers\import` fails | Run from the repository root in PowerShell (not cmd), or give the absolute path `C:\path\to\RePatch\containers\import`. Avoid cloning under OneDrive — its sync can lock files Gradle/Docker write. |
+
+### Windows notes
+
+- Clone normally — `.gitattributes` pins the shell scripts to LF so the
+  image builds correctly regardless of `core.autocrlf`.
+- In Docker Desktop you can start the container from the GUI (it needs
+  nothing external), but you won't get a terminal that way; use the
+  `docker run -it ...` / `docker exec -it repatch bash` commands from
+  PowerShell, or the running container's **Exec** tab.
+
+## The full paper run
 
 `repatch run --dataset complete` runs the paper's **full evaluation:
 all 477 distinct scenarios** in `complete_data` (478 lines, one
@@ -183,7 +348,7 @@ docker run -it --rm -v repatch-data:/home/repatch/data -v repatch-results:/home/
 repatch run --dataset complete --token ghp_yourtoken
 ```
 
-### The validation study (build + test stages)
+## The validation study (build + test stages)
 
 `repatch run` covers level 1 of the RePatch 2.0 validation study (does
 RePatch produce a conflict-free target-side change?) and, since the
@@ -227,63 +392,6 @@ resume one with `--keep-db`), so results accumulate and stay browsable
 across sessions: databases, clone, and caches all live in the
 `repatch-data` volume, merged result trees and logs in
 `repatch-results`. Type `exit` to leave; MySQL shuts down cleanly.
-
-### Browsing the databases with phpMyAdmin
-
-By default MySQL listens on the container's loopback only. Set
-`RP_DB_BIND=0.0.0.0` to let it accept connections from other containers
-(or, combined with `-p`, from the host). The `repatch`/`repatch` account
-already permits remote login.
-
-```bash
-docker network create repatch-net   # one-time
-
-docker run -it --rm --network repatch-net --name repatch \
-  -e RP_DB_BIND=0.0.0.0 \
-  -v repatch-data:/home/repatch/data -v repatch-results:/home/repatch/results \
-  --memory 10g --shm-size 1g repatch-headless
-
-docker run -d --name repatch-pma --network repatch-net -p 8080:80 \
-  -e PMA_HOST=repatch -e PMA_USER=repatch -e PMA_PASSWORD=repatch phpmyadmin
-```
-
-Browse http://localhost:8080 — every run database (`repatch_477`,
-`repatch_sample`, ...) is visible. No MySQL port ever touches the host;
-the two containers talk over the private docker network. To use host
-tools (MySQL Workbench, a host phpMyAdmin) instead, publish the port:
-`-p 127.0.0.1:3307:3306 -e RP_DB_BIND=0.0.0.0` and connect to
-`127.0.0.1:3307`. Remember only one repatch container can hold the
-MySQL datadir at a time — browse from the same container that runs the
-evaluation, not a second one.
-
-### Compose (optional convenience)
-
-```bash
-cd containers
-docker compose build
-docker compose run --rm headless                     # interactive shell
-docker compose run --rm headless repatch run 16954   # one-shot command
-```
-
-### Non-interactive / CI
-
-Any arguments after the image name are executed as-is (MySQL is started
-first), and running with **no TTY and no arguments** performs one
-default sample run — so the old one-shot workflow still works:
-
-```bash
-docker run --rm -v repatch-data:/home/repatch/data repatch-headless \
-  repatch run --golden-check          # exit code ≠ 0 on baseline mismatch
-```
-
-### Windows notes
-
-- Clone normally — `.gitattributes` pins the shell scripts to LF so the
-  image builds correctly regardless of `core.autocrlf`.
-- In Docker Desktop you can start the container from the GUI (it needs
-  nothing external anymore), but you won't get a terminal that way; use
-  the `docker run -it ...` command above from PowerShell, or open the
-  running container's **Exec** tab and type `bash`.
 
 ## What the image bakes in (and why)
 
