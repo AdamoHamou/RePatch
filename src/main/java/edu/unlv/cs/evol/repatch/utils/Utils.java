@@ -4,6 +4,7 @@ import edu.unlv.cs.evol.repatch.refactoringObjects.*;
 import edu.unlv.cs.evol.repatch.refactoringObjects.typeObjects.MethodSignatureObject;
 import edu.unlv.cs.evol.repatch.refactoringObjects.typeObjects.ParameterObject;
 import com.intellij.analysis.AnalysisScope;
+import com.intellij.ide.IdeEventQueue;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.application.WriteAction;
@@ -146,12 +147,309 @@ public class Utils {
             DumbServiceImpl dumbService = DumbServiceImpl.getInstance(project);
             // Waits for the task to finish
             dumbService.completeJustSubmittedTasks();
+            // completeJustSubmittedTasks only flushes indexing submitted from
+            // the EDT; indexing triggered by background VFS refreshes is not
+            // covered, and PSI lookups then fail with IndexNotReadyException
+            // (invert AND replay silently no-oped on a repo small enough for
+            // the pipeline to reach them before initial indexing finished).
+            // The pipeline runs ON the EDT (ApplicationStarter), where
+            // waitForSmartMode is forbidden — pump the event queue instead so
+            // indexing can complete before PSI lookups run.
+            if (ApplicationManager.getApplication().isDispatchThread()) {
+                while (DumbService.isDumb(project)) {
+                    IdeEventQueue.getInstance().flushQueue();
+                }
+            } else {
+                dumbService.waitForSmartMode();
+            }
         }
     }
 
     public static void refreshVFS() {
         VirtualFileManager vFM = VirtualFileManager.getInstance();
         vFM.refreshWithoutFileWatcher(false);
+    }
+
+    /*
+     * Make one refactoring's edits fully visible to the next one's usage
+     * search. Each rename edits documents and triggers async index updates;
+     * without a settle point, refactoring N+1's findUsages races those
+     * updates and nondeterministically misses usages (observed on 16954:
+     * identical runs alternate between complete and incomplete inversions
+     * of the same refactoring list, e.g. a usage in KafkaStreams.java found
+     * in one run and missed in the next). Commit documents, drain the EDT
+     * queue, then wait out any dumb mode the updates triggered.
+     */
+    public static void settleAfterPsiEdit(Project project) {
+        PsiDocumentManager.getInstance(project).commitAllDocuments();
+        if (ApplicationManager.getApplication().isDispatchThread()) {
+            IdeEventQueue.getInstance().flushQueue();
+        }
+        dumbServiceHandler(project);
+    }
+
+    /*
+     * Phase-entry gate: wait until the workspace stops moving. Content-root
+     * recalculation after checkouts runs asynchronously (observed: 149 roots
+     * at right-invert entry dropping to 108 by left-invert entry) and
+     * rescopes usage searches while a phase runs. Require module and root
+     * counts to hold stable across consecutive samples before proceeding,
+     * then drain the dumb queue.
+     */
+    /*
+     * The workspace model can be DESTROYED mid-run: the platform's JPS
+     * synchronizer reacts to (real or VFS-phantom) changes in .idea/*.iml
+     * files and re-applies the model from its view of the disk; in a losing
+     * timing that apply is empty, and a project that had 43 modules drops to
+     * 0 for the rest of the run (observed across cached, cold-cache, and
+     * auto-import-disabled configurations). The on-disk files stay intact
+     * throughout, so the same watcher that zeroed the model can restore it:
+     * touch modules.xml, refresh it in the VFS, and pump until the reload
+     * re-applies a non-empty model.
+     */
+    public static boolean healProjectModel(Project project) {
+        try {
+            String modulesXml = project.getBasePath() + "/.idea/modules.xml";
+            File f = new File(modulesXml);
+            if (!f.exists()) {
+                System.out.println("-> Model heal: no modules.xml at " + modulesXml);
+                return false;
+            }
+            // Passive heal (touch + VFS refresh + pump) does NOT work: the
+            // JPS watcher either ignores the touch or re-applies empty again.
+            // Worse, the IDE SAVES the destroyed state back to disk (an empty
+            // modules.xml), so the on-disk truth is gone too. Restore the
+            // model files from a pristine backup the IDE never writes to
+            // (-Drepatch.modelBackupDir, provided by the run harness), then
+            // load each .iml directly through ModuleManager — no platform
+            // watcher involved.
+            System.out.println("-> Model heal: modules gone, loading .imls directly from modules.xml");
+            List<String> imlPaths = parseImlPaths(f);
+            String backupDir = System.getProperty("repatch.modelBackupDir");
+            long existing = imlPaths.stream().filter(p -> new File(p).exists()).count();
+            // The platform deletes the .iml files of "removed" modules when
+            // the zeroed model auto-saves (observed: modules.xml intact with
+            // 43 entries, all 43 .imls gone from disk). Restore whenever any
+            // model file is missing, not just when modules.xml is empty.
+            if ((imlPaths.isEmpty() || existing < imlPaths.size()) && backupDir != null) {
+                System.out.println("-> Model heal: " + existing + "/" + imlPaths.size()
+                        + " imls on disk; restoring model files from " + backupDir);
+                restoreModelFilesFromBackup(backupDir, project.getBasePath());
+                imlPaths = parseImlPaths(f);
+            }
+            System.out.println("-> Model heal: " + imlPaths.size() + " iml entries in modules.xml, "
+                    + imlPaths.stream().filter(p -> new File(p).exists()).count() + " on disk");
+            int loaded = 0;
+            for (String imlPath : imlPaths) {
+                if (!new File(imlPath).exists()) {
+                    continue;
+                }
+                try {
+                    WriteAction.runAndWait(() ->
+                            ModuleManager.getInstance(project).loadModule(Paths.get(imlPath)));
+                    loaded++;
+                } catch (Throwable perModule) {
+                    System.out.println("-> Model heal: could not load " + imlPath + ": " + perModule);
+                }
+            }
+            if (ApplicationManager.getApplication().isDispatchThread()) {
+                IdeEventQueue.getInstance().flushQueue();
+            }
+            dumbServiceHandler(project);
+            int m = ModuleManager.getInstance(project).getModules().length;
+            System.out.println("-> Model heal " + (m > 0 ? "succeeded: " + m + " modules (" + loaded
+                    + " imls loaded)" : "FAILED: still 0 modules after loading " + loaded + " imls"));
+            return m > 0;
+        } catch (Throwable t) {
+            System.out.println("-> Model heal error: " + t);
+            return false;
+        }
+    }
+
+    private static List<String> parseImlPaths(File modulesXml) throws IOException {
+        String xml = new String(Files.readAllBytes(modulesXml.toPath()));
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("filepath=\"([^\"]+)\"").matcher(xml);
+        List<String> imlPaths = new ArrayList<>();
+        String projectDir = modulesXml.getParentFile().getParent();
+        while (matcher.find()) {
+            imlPaths.add(matcher.group(1).replace("$PROJECT_DIR$", projectDir));
+        }
+        return imlPaths;
+    }
+
+    /*
+     * Copy .idea/modules.xml, .idea/misc.xml and every *.iml (by relative
+     * path) from the pristine backup tree over the project. Only model files
+     * are touched — never source files.
+     */
+    private static void restoreModelFilesFromBackup(String backupDir, String projectDir) {
+        try {
+            java.nio.file.Path backup = Paths.get(backupDir);
+            java.nio.file.Path target = Paths.get(projectDir);
+            for (String ideaFile : new String[]{".idea/modules.xml", ".idea/misc.xml"}) {
+                java.nio.file.Path src = backup.resolve(ideaFile);
+                if (Files.exists(src)) {
+                    Files.createDirectories(target.resolve(ideaFile).getParent());
+                    Files.copy(src, target.resolve(ideaFile),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+            final int[] copied = {0};
+            Files.walk(backup)
+                    .filter(p -> p.toString().endsWith(".iml"))
+                    .forEach(p -> {
+                        try {
+                            java.nio.file.Path rel = backup.relativize(p);
+                            Files.copy(p, target.resolve(rel),
+                                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                            copied[0]++;
+                        } catch (IOException ignored) {
+                        }
+                    });
+            System.out.println("-> Model heal: restored " + copied[0] + " imls + .idea metadata from backup");
+        } catch (Throwable t) {
+            System.out.println("-> Model heal: backup restore failed: " + t);
+        }
+    }
+
+    public static void waitForWorkspaceSettle(Project project) {
+        long deadline = System.currentTimeMillis() + 120_000L;
+        int stable = 0;
+        int prevModules = -1;
+        int prevRoots = -1;
+        boolean healTried = false;
+        while (stable < 3 && System.currentTimeMillis() < deadline) {
+            int m = ModuleManager.getInstance(project).getModules().length;
+            // A module-less project is never "settled" — it is the failure
+            // state itself. Attempt one self-heal (forced JPS reload from the
+            // intact on-disk files) before waiting any further.
+            if (m == 0 && !healTried) {
+                healTried = true;
+                healProjectModel(project);
+                m = ModuleManager.getInstance(project).getModules().length;
+            }
+            int r = com.intellij.openapi.roots.ProjectRootManager.getInstance(project).getContentRoots().length;
+            if (m > 0 && m == prevModules && r == prevRoots) {
+                stable++;
+            } else {
+                stable = 0;
+            }
+            prevModules = m;
+            prevRoots = r;
+            if (ApplicationManager.getApplication().isDispatchThread()) {
+                IdeEventQueue.getInstance().flushQueue();
+            }
+            try {
+                Thread.sleep(300);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        dumbServiceHandler(project);
+    }
+
+    /*
+     * The JPS workspace model loads asynchronously after openOrImport and is
+     * applied on the EDT at non-modal modality. The pipeline monopolizes the
+     * EDT and later runs under modal contexts (progress, dumb-queue
+     * processing), so when the model loses the initial race its application
+     * starves FOREVER: 0 modules -> 0 content roots -> empty indexes -> every
+     * PSI lookup null -> vacuous inversions. (Observed: flaked runs stay at
+     * modules=0 for 20+ minutes while clean runs show 43 within seconds;
+     * startupPassed=true in both.) Must be called right after project open,
+     * BEFORE any modal phase exists, where pumping still dispatches the
+     * model-application runnables.
+     */
+    public static void waitForProjectModel(Project project) {
+        if (project == null) {
+            return;
+        }
+        long deadline = System.currentTimeMillis() + 300_000L;
+        int modules = ModuleManager.getInstance(project).getModules().length;
+        while (modules == 0 && System.currentTimeMillis() < deadline) {
+            if (ApplicationManager.getApplication().isDispatchThread()) {
+                IdeEventQueue.getInstance().flushQueue();
+            }
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            modules = ModuleManager.getInstance(project).getModules().length;
+        }
+        System.out.println("-> Project model loaded: " + modules + " modules, "
+                + com.intellij.openapi.roots.ProjectRootManager.getInstance(project).getContentRoots().length
+                + " content roots");
+        dumbServiceHandler(project);
+    }
+
+    /*
+     * Pin the loaded project model for the rest of the pipeline run. The JPS
+     * synchronizer re-reads the module model whenever a VFS refresh reports
+     * .idea/.iml changes; under checkout churn that incremental reload can go
+     * through a stale VFS view and apply an EMPTY model, which the IDE then
+     * persists by deleting every .iml on the next save. Both reload entry
+     * points (needToReloadProjectEntities / reloadProjectEntities) honor
+     * StoreReloadManager.isReloadBlocked(), and the platform itself takes
+     * this same block around every VFS refresh session — holding it for the
+     * process lifetime suppresses the destruction at its source. The initial
+     * model load is NOT affected: DelayedProjectSynchronizer syncs via
+     * loadProject(), which does not check the block. The backup-restore heal
+     * in waitForWorkspaceSettle stays as a fallback.
+     */
+    public static void pinProjectModel(Project project) {
+        if (project == null) {
+            return;
+        }
+        com.intellij.configurationStore.StoreReloadManager.Companion.getInstance(project)
+                .blockReloadingProjectOnExternalChanges();
+        System.out.println("-> Project-store reload blocked for pipeline lifetime (model pinned)");
+    }
+
+    /*
+     * When misc.xml names a project SDK, the platform resolves it
+     * ASYNCHRONOUSLY after open (UnknownSdkTracker; observed taking >2
+     * minutes on a virgin config). Until it lands, java.* types do not
+     * resolve, so method-signature matching fails and every inversion
+     * silently no-ops (vacuous). A persistent sandbox config masks this —
+     * the SDK is already registered from earlier runs — which is why it
+     * only surfaced on fresh environments. Wait for the named SDK, then
+     * let its re-index finish. Projects that declare no SDK skip the wait.
+     */
+    public static void waitForProjectSdk(Project project) {
+        if (project == null) {
+            return;
+        }
+        com.intellij.openapi.roots.ProjectRootManager rootManager =
+                com.intellij.openapi.roots.ProjectRootManager.getInstance(project);
+        String wanted = rootManager.getProjectSdkName();
+        if (wanted == null) {
+            System.out.println("-> No project SDK declared; skipping SDK wait");
+            return;
+        }
+        long deadline = System.currentTimeMillis() + 300_000L;
+        while (rootManager.getProjectSdk() == null && System.currentTimeMillis() < deadline) {
+            if (ApplicationManager.getApplication().isDispatchThread()) {
+                IdeEventQueue.getInstance().flushQueue();
+            }
+            try {
+                Thread.sleep(250);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        com.intellij.openapi.projectRoots.Sdk sdk = rootManager.getProjectSdk();
+        if (sdk == null) {
+            System.out.println("-> WARNING: project SDK '" + wanted
+                    + "' unresolved after wait; type resolution may degrade (vacuous inversions)");
+        } else {
+            System.out.println("-> Project SDK resolved: " + sdk.getName() + " (" + sdk.getHomePath() + ")");
+        }
+        dumbServiceHandler(project);
     }
 
     /*
@@ -447,13 +745,147 @@ public class Utils {
     }
 
     public PsiClass getPsiClassFromClassAndFileNames(String className, String filePath) {
-        JavaPsiFacade jPF = new JavaPsiFacadeImpl(project);
-        PsiClass psiClass = jPF.findClass(className, GlobalSearchScope.allScope((project)));
-        // If the class isn't found, there might not have been a gradle file and we need to find the class another way
-        if(psiClass == null) {
-            psiClass = getPsiClassByFilePath(filePath, className);
+        PsiClass psiClass = findPsiClassOnce(className, filePath);
+        if(psiClass != null) {
+            return psiClass;
+        }
+        // Null can mean the class is truly absent OR that the initial indexing
+        // scan has not caught up with the checked-out tree: the pipeline runs
+        // on the EDT and can reach PSI lookups before the scan is even queued,
+        // in which case isDumb() is still false and the indexes are simply
+        // empty (every invert then silently no-ops — the vacuous-inversion
+        // mode). The two are distinguishable: the file existing on disk while
+        // FilenameIndex cannot see it proves index blindness, so refresh,
+        // pump, and retry only in that state, bounded by a deadline.
+        int rounds = 0;
+        long deadline = System.currentTimeMillis() + 120_000L;
+        while(psiClass == null && isIndexBlindTo(filePath) && System.currentTimeMillis() < deadline) {
+            if(rounds == 0) {
+                System.out.println("-> Index not ready for " + filePath + "; waiting for indexing to catch up");
+            }
+            // Diagnostic snapshot on a sparse schedule (rounds 0,1,2,4,8,...):
+            // captures which layer is failing — VFS, PSI-by-path, or the
+            // index query — plus dumb/startup state, to pin the flake's
+            // mechanism instead of guessing at it.
+            if(rounds <= 2 || (rounds & (rounds - 1)) == 0) {
+                logIndexProbe(rounds, className, filePath);
+            }
+            rounds++;
+            refreshVFS();
+            reparsePsiFiles(project);
+            dumbServiceHandler(project);
+            if(ApplicationManager.getApplication().isDispatchThread()) {
+                IdeEventQueue.getInstance().flushQueue();
+            }
+            try {
+                Thread.sleep(250);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            psiClass = findPsiClassOnce(className, filePath);
+        }
+        if(rounds > 0) {
+            System.out.println("-> Index readiness wait ended after " + rounds + " rounds; "
+                    + className + (psiClass != null ? " resolved" : " STILL unresolved"));
+            if(psiClass == null) {
+                logIndexProbe(rounds, className, filePath);
+            }
         }
         return psiClass;
+    }
+
+    /*
+     * One-line state snapshot of every layer involved in resolving a class,
+     * from the raw VFS up to the index query. INDEXPROBE lines are grep bait
+     * for run forensics.
+     */
+    private void logIndexProbe(int round, String className, String filePath) {
+        StringBuilder sb = new StringBuilder("INDEXPROBE round=").append(round);
+        try {
+            sb.append(" modules=").append(ModuleManager.getInstance(project).getModules().length);
+            sb.append(" contentRoots=").append(
+                    com.intellij.openapi.roots.ProjectRootManager.getInstance(project).getContentRoots().length);
+            sb.append(" dumb=").append(DumbService.isDumb(project));
+            try {
+                sb.append(" startupPassed=").append(
+                        com.intellij.ide.startup.StartupManagerEx.getInstanceEx(project).postStartupActivityPassed());
+            } catch (Throwable t) {
+                sb.append(" startupPassed=?").append(t.getClass().getSimpleName());
+            }
+            String absPath = project.getBasePath() + "/" + filePath;
+            VirtualFile vf = LocalFileSystem.getInstance().findFileByPath(absPath);
+            if(vf == null) {
+                vf = LocalFileSystem.getInstance().refreshAndFindFileByPath(absPath);
+                sb.append(" vfs=").append(vf == null ? "MISSING" : "found-after-refresh");
+            } else {
+                sb.append(" vfs=").append(vf.isValid() ? "valid" : "INVALID");
+            }
+            if(vf != null) {
+                PsiFile pf = PsiManager.getInstance(project).findFile(vf);
+                if(pf instanceof PsiJavaFile) {
+                    PsiClass[] classes = ((PsiJavaFile) pf).getClasses();
+                    boolean hit = false;
+                    for(PsiClass c : classes) {
+                        if(Objects.equals(c.getQualifiedName(), className)) { hit = true; break; }
+                    }
+                    sb.append(" psiByPath=").append(classes.length).append("classes,target=").append(hit);
+                } else {
+                    sb.append(" psiByPath=").append(pf == null ? "null" : pf.getClass().getSimpleName());
+                }
+                sb.append(" inProjectScope=").append(
+                        GlobalSearchScope.projectScope(project).contains(vf));
+            }
+            String fileName = filePath.substring(filePath.lastIndexOf("/") + 1);
+            try {
+                sb.append(" filenameIdx=").append(
+                        FilenameIndex.getFilesByName(project, fileName, GlobalSearchScope.allScope(project)).length);
+            } catch (Throwable t) {
+                sb.append(" filenameIdx=").append(t.getClass().getSimpleName());
+            }
+            try {
+                sb.append(" findClass=").append(
+                        new JavaPsiFacadeImpl(project).findClass(className, GlobalSearchScope.allScope(project)) != null);
+            } catch (Throwable t) {
+                sb.append(" findClass=").append(t.getClass().getSimpleName());
+            }
+        } catch (Throwable t) {
+            sb.append(" probeError=").append(t);
+        }
+        System.out.println(sb);
+    }
+
+    private PsiClass findPsiClassOnce(String className, String filePath) {
+        try {
+            JavaPsiFacade jPF = new JavaPsiFacadeImpl(project);
+            PsiClass psiClass = jPF.findClass(className, GlobalSearchScope.allScope((project)));
+            // If the class isn't found, there might not have been a gradle file and we need to find the class another way
+            if(psiClass == null) {
+                psiClass = getPsiClassByFilePath(filePath, className);
+            }
+            return psiClass;
+        } catch (com.intellij.openapi.project.IndexNotReadyException e) {
+            return null;
+        }
+    }
+
+    /*
+     * True when the file exists in the working tree but the filename index
+     * cannot see it — the signature of querying before initial indexing has
+     * completed (a legitimately deleted/renamed file returns false and the
+     * caller's null stands immediately).
+     */
+    private boolean isIndexBlindTo(String filePath) {
+        File onDisk = new File(project.getBasePath(), filePath);
+        if(!onDisk.exists()) {
+            return false;
+        }
+        String fileName = filePath.substring(filePath.lastIndexOf("/") + 1);
+        try {
+            return FilenameIndex.getFilesByName(project, fileName, GlobalSearchScope.allScope(project)).length == 0;
+        } catch (com.intellij.openapi.project.IndexNotReadyException e) {
+            return true;
+        }
     }
 
     public static PsiMethod getPsiMethod(PsiClass psiClass, MethodSignatureObject methodSignatureObject) {
@@ -522,12 +954,25 @@ public class Utils {
             return;
         }
         List<Pair<Integer, Integer>> conflictingRegions = getConflictingRegions(absolutePath);
-        for(RefactoringObject refactoring : refactorings) {
+        for(Iterator<RefactoringObject> iterator = refactorings.iterator(); iterator.hasNext(); ) {
+            RefactoringObject refactoring = iterator.next();
             if(refactoring instanceof InlineMethodObject || refactoring instanceof ExtractMethodObject) {
+                // Never replay Extract/Inline into a file git could not auto-merge:
+                // their replay operations are conflict-marker-blind, so re-applying
+                // them on top of conflict markers fabricates conflicts that plain
+                // git does not have. Their stored line numbers refer to the original
+                // commit's text, so region-level precision is not meaningful here —
+                // match on either endpoint of the refactoring instead.
+                if (path.equals(refactoring.getOriginalFilePath())
+                        || path.equals(refactoring.getDestinationFilePath())) {
+                    System.out.println("-> Pruned " + refactoring.getRefactoringType()
+                            + " from replay: conflicting file " + path);
+                    iterator.remove();
+                }
                 continue;
             }
 
-            if (!refactoring.getOriginalFilePath().equals(path)) {
+            if (!path.equals(refactoring.getOriginalFilePath())) {
                 continue;
             }
 
@@ -539,7 +984,9 @@ public class Utils {
 
             setBoundaries(refactoring);
             if (!checkReplayRefactoring(refactoring, conflictingRegions)) {
-                refactorings.remove(refactoring);
+                System.out.println("-> Pruned " + refactoring.getRefactoringType()
+                        + " from replay: overlaps conflict region in " + path);
+                iterator.remove();
             }
         }
     }
@@ -597,23 +1044,33 @@ public class Utils {
         return lines;
     }
 
-    private boolean checkReplayRefactoring(RefactoringObject refactoring, List<Pair<Integer, Integer>> conflictingRegions) {
+    // Package-private for ReplayGeometryTest: pure region math, no PSI.
+    boolean checkReplayRefactoring(RefactoringObject refactoring, List<Pair<Integer, Integer>> conflictingRegions) {
         int refStartLine = refactoring.getStartLine();
         int refEndLine = refactoring.getEndLine();
+        // Types without boundary support report 0/0; their edit surface is
+        // unknown, so keep the conservative historical behavior: never replay
+        // them into a file that has conflict regions.
+        if(refStartLine == 0 && refEndLine == 0) {
+            return false;
+        }
         for(Pair<Integer,Integer> conflictingRegion : conflictingRegions) {
             int conflictingStartLine = conflictingRegion.getLeft();
             int conflictingEndLine = conflictingRegion.getRight();
-            // If the refactoring is within the conflicting region, do not replay
-            if(refStartLine > conflictingStartLine && refEndLine < conflictingEndLine) {
-                return false;
+            // Disjoint ranges cannot interact; check the next region.
+            if(refEndLine < conflictingStartLine || refStartLine > conflictingEndLine) {
+                continue;
             }
-            // Otherwise, if the regions overlap, do not replay
-            else if(refStartLine < conflictingStartLine && refEndLine < conflictingEndLine) {
-                return false;
+            // The conflict region sits strictly inside the refactoring's range:
+            // safe for method/class renames (they edit the signature, not the
+            // body), but NOT for parameter renames, whose usage edits span the
+            // whole method body including the conflicted lines.
+            if(refStartLine < conflictingStartLine && refEndLine > conflictingEndLine
+                    && !(refactoring instanceof RenameParameterObject)) {
+                continue;
             }
-            else if(refStartLine > conflictingStartLine && refEndLine > conflictingEndLine) {
-                return false;
-            }
+            // Any other overlap: do not replay on top of conflict markers.
+            return false;
         }
         // If the regions are not related or the region is within the method or class, replay
         return true;
@@ -645,6 +1102,23 @@ public class Utils {
                 return;
             }
             psiElement = psiClass;
+        }
+        else if(ref instanceof RenameParameterObject) {
+            // A parameter rename edits only its containing method (parameter
+            // scope is method-local), so the method's range is the replay's
+            // edit surface. Without boundaries the 0/0 default made every
+            // rename-parameter in a conflicting file look overlapping.
+            String filePath = ref.getOriginalFilePath();
+            String className = ((RenameParameterObject) ref).getOriginalClassName();
+            PsiClass psiClass = getPsiClassFromClassAndFileNames(className, filePath);
+            if(psiClass == null) {
+                return;
+            }
+            PsiMethod psiMethod = getPsiMethod(psiClass, ((RenameParameterObject) ref).getOriginalMethodSignature());
+            if(psiMethod == null) {
+                return;
+            }
+            psiElement = psiMethod;
         }
         else {
             return;

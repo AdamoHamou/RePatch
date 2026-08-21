@@ -2,6 +2,7 @@ package edu.unlv.cs.evol.integration;
 
 import edu.unlv.cs.evol.integration.data.ConflictingFileData;
 import edu.unlv.cs.evol.integration.utils.GitHubUtils;
+import edu.unlv.cs.evol.integration.utils.RepoNaming;
 import edu.unlv.cs.evol.repatch.RePatch;
 import edu.unlv.cs.evol.repatch.refactoringObjects.RefactoringObject;
 import edu.unlv.cs.evol.integration.utils.EvaluationUtils;
@@ -34,6 +35,7 @@ import org.eclipse.jgit.transport.RemoteConfig;
 import org.eclipse.jgit.transport.URIish;
 import org.jetbrains.annotations.NotNull;
 import org.kohsuke.github.GHPullRequest;
+import org.kohsuke.github.GHUser;
 import org.refactoringminer.api.Refactoring;
 
 import java.io.*;
@@ -54,8 +56,41 @@ public class RePatchIntegration {
      * Use the given git repository to evaluate IntelliMerge, RePatch, and Git.
      * Use the give git repositories (mainline and variant fork) to integrate patches with RePatch and Git
      */
+    /*
+     * Dataset selector (SPEC-11): -PdataSet=sample|complete on the gradle
+     * command line reaches the IDE JVM as -Drepatch.dataSet via the existing
+     * repatch.* property forwarding in build.gradle. Default preserves the
+     * historical sample_data behavior.
+     */
+    static final int PR_FETCH_MAX_ATTEMPTS = 3;
+
+    /*
+     * B4/SPEC-9: classify a PR-fetch IOException. A GitHub 404 is a permanent
+     * fact about the PR (skip it and mark done); anything else is assumed
+     * transient network trouble — retry up to the cap, then give up WITHOUT
+     * marking done so a re-run picks the patch up. Mislabeling a transient
+     * failure as "not found" once cost a valid patch a sticky skip.
+     */
+    enum PrFetchFailure { PERMANENT_NOT_FOUND, RETRY, GIVE_UP }
+
+    static PrFetchFailure classifyPrFetchFailure(IOException e, int attempt, int maxAttempts) {
+        if (e instanceof org.kohsuke.github.GHFileNotFoundException) {
+            return PrFetchFailure.PERMANENT_NOT_FOUND;
+        }
+        return attempt >= maxAttempts ? PrFetchFailure.GIVE_UP : PrFetchFailure.RETRY;
+    }
+
+    static String dataSetDir() {
+        String dataSet = System.getProperty("repatch.dataSet", "sample");
+        if (!dataSet.equals("sample") && !dataSet.equals("complete")) {
+            System.out.println("-> Unknown repatch.dataSet '" + dataSet + "'; using 'sample'");
+            dataSet = "sample";
+        }
+        return "/" + dataSet + "_data";
+    }
+
     public void runComparison(String path, String evaluationProject) throws Exception {
-        URL url = IntegrationPipeline.class.getResource("/sample_data/repatch_integration_projects");
+        URL url = IntegrationPipeline.class.getResource(dataSetDir() + "/repatch_integration_projects");
         assert url != null;
         InputStream inputStream = url.openStream();
         ArrayList<String> lines = Utils.getLinesFromInputStream(inputStream);
@@ -76,7 +111,7 @@ public class RePatchIntegration {
             }
             proj = Project.findFirst("fork_url = ?", projectUrl);
             if (proj == null) {
-                projectName = openProject(path, projectUrl, mainLineUrl).substring(1); //name of the fork repo, e.g linkedin
+                projectName = openProject(path, projectUrl, mainLineUrl); // checkout dir name, e.g. linkedin-kafka
                 System.out.println("Starting Project -> " + projectName);
                 proj = new Project(mainLineUrl, mainLineName, projectUrl, projectName);
                 proj.saveIt();
@@ -90,7 +125,7 @@ public class RePatchIntegration {
             } else if (proj.isDone()) {
                 continue;
             } else {
-                projectName = openProject(path, projectUrl, mainLineUrl).substring(1);
+                projectName = openProject(path, projectUrl, mainLineUrl);
                 System.out.println("Continuing " + projectName);
                 GitRepositoryManager repoManager = GitRepositoryManager.getInstance(project);
                 List<GitRepository> repos = repoManager.getRepositories();
@@ -101,7 +136,7 @@ public class RePatchIntegration {
                 }
             }
             System.out.println("Repository for Integration -> " + repo);
-            evaluateProject(repo, proj, projectName);
+            evaluateProject(repo, proj, projectUrl);
             proj.setDone();
             proj.saveIt();
 
@@ -158,8 +193,8 @@ public class RePatchIntegration {
 //        }
 //
 //    }
-    private void evaluateProject(GitRepository repo, Project proj, String projectName) throws Exception {
-        URL url = IntegrationPipeline.class.getResource("/sample_data/repatch_integration_patches");
+    private void evaluateProject(GitRepository repo, Project proj, String projectUrl) throws Exception {
+        URL url = IntegrationPipeline.class.getResource(dataSetDir() + "/repatch_integration_patches");
 
         InputStream inputStream = url.openStream();
         ArrayList<String> lines = Utils.getLinesFromInputStream(inputStream);
@@ -174,48 +209,128 @@ public class RePatchIntegration {
         for(String line : lines) {
             String[] values = line.split(",");
 //            System.out.println("VALUES: " + Arrays.toString(values));
-            if(values[1].contains(projectName)) {
+            // Match patches by the variant fork's URL, not the checkout dir
+            // name: the dir is owner-prefixed (linkedin-kafka) and no longer
+            // a substring of the URL in the patches file — and substring
+            // matching cross-leaked between forks sharing a repo name.
+            if(values[1].trim().equals(projectUrl)) {
                 System.out.println(">>>>>>>>>Patch Integration " + ++i + ": PR " + values[2]+ "<<<<<<<<<<");
-                // add PR to patch table
-                Patch patch = new Patch(Integer.valueOf(values[2]),String.valueOf(values[3]),0, proj);
-                patch.saveIt();
+                // Find-or-create: unconditionally inserting duplicated the
+                // patch row on every re-run of the same scenario list, and
+                // downstream findFirst calls then read whichever duplicate
+                // happened to come back first.
+                Patch patch = Patch.findFirst("number = ? and project_id = ?",
+                        Integer.valueOf(values[2]), proj.getId());
+                if (patch == null) {
+                    try {
+                        patch = new Patch(Integer.valueOf(values[2]), String.valueOf(values[3]), 0, proj);
+                        patch.saveIt();
+                    } catch (Exception e) {
+                        // A failed row insert must not take down the whole
+                        // project loop; skip this scenario loudly instead.
+                        System.out.println("-> SKIP PR " + values[2] + ": could not create patch row ("
+                                + e.getMessage() + ")");
+                        continue;
+                    }
+                }
                 // Get the merge commit of the PR
                 // values[0] = Github url of the mainline
                 // values[2] = merged PR number
 
-                GHPullRequest mergedPullRequest = new GitHubUtils().getMergeCommitSha(values[0], Integer.valueOf(values[2]));
-                String prMergeCommit = mergedPullRequest.getMergeCommitSha();
-                String prMergeAuthor = mergedPullRequest.getMergedBy().getName();
-                String prMergeAuthorEmail = mergedPullRequest.getMergedBy().getEmail();
-                long prTimeStamp = mergedPullRequest.getMergedAt().getTime();
-
-                // get the parent of the merge commit
-                VcsFullCommitDetails mergeParents = getCommitDetails(repo, prMergeCommit);
-                List<Hash> parents = mergeParents.getParents();
-                String mergeParentSha = null;
-                if(!parents.isEmpty()) {
-                    mergeParentSha = parents.get(0).asString();
-                    System.out.println("-> Parent SHA (Base/Left): " + mergeParentSha);
+                // Only the merge commit SHA is load-bearing (it is the commit we
+                // cherry-pick). A missing/deleted PR throws (404) from the fetch,
+                // an unmerged one has no merge SHA; both skip the patch instead
+                // of aborting the whole project run. Transient network failures
+                // also surface as IOException and must NOT be recorded as
+                // missing PRs (a Connection-refused blip once skipped a valid
+                // patch as "not found") — retry those a few times, then skip
+                // with an honest message and leave the patch NOT done so a
+                // re-run picks it up.
+                GHPullRequest mergedPullRequest = null;
+                boolean prFetchFailed = false;
+                for (int attempt = 1; ; attempt++) {
+                    try {
+                        mergedPullRequest = new GitHubUtils().getMergeCommitSha(values[0], Integer.valueOf(values[2]));
+                        break;
+                    } catch (IOException e) {
+                        PrFetchFailure disposition = classifyPrFetchFailure(e, attempt, PR_FETCH_MAX_ATTEMPTS);
+                        if (disposition == PrFetchFailure.PERMANENT_NOT_FOUND) {
+                            System.out.println("-> SKIP PR " + values[2] + ": not found on GitHub (" + e.getMessage() + ")");
+                            patch.setDone();
+                            patch.saveIt();
+                            prFetchFailed = true;
+                            break;
+                        }
+                        if (disposition == PrFetchFailure.GIVE_UP) {
+                            System.out.println("-> SKIP PR " + values[2] + ": GitHub unreachable after "
+                                    + attempt + " attempts (" + e.getMessage() + "); leaving patch pending");
+                            prFetchFailed = true;
+                            break;
+                        }
+                        System.out.println("-> PR " + values[2] + " fetch attempt " + attempt
+                                + " failed (" + e.getMessage() + "); retrying");
+                        try {
+                            Thread.sleep(5_000L * attempt);
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
                 }
+                if (prFetchFailed) {
+                    continue;
+                }
+                if (mergedPullRequest == null || !mergedPullRequest.isMerged()
+                        || mergedPullRequest.getMergeCommitSha() == null) {
+                    System.out.println("-> SKIP PR " + values[2] + ": not merged or no merge commit on GitHub");
+                    patch.setDone();
+                    patch.saveIt();
+                    continue;
+                }
+                String prMergeCommit = mergedPullRequest.getMergeCommitSha();
+                // Author name/email/timestamp are nullable bookkeeping columns;
+                // GitHub does not guarantee them even for merged PRs.
+                GHUser mergedBy = mergedPullRequest.getMergedBy();
+                String prMergeAuthor = (mergedBy != null && mergedBy.getName() != null) ? mergedBy.getName() : "unknown";
+                String prMergeAuthorEmail = (mergedBy != null && mergedBy.getEmail() != null) ? mergedBy.getEmail() : "";
+                long prTimeStamp = mergedPullRequest.getMergedAt() != null ? mergedPullRequest.getMergedAt().getTime() : 0L;
 
-                System.out.println(" -> MergeCommitSha: " + prMergeCommit);
+                // One poisoned scenario (unreachable merge commit, mid-merge
+                // crash, ...) must not take down an unattended multi-hundred
+                // scenario run: skip it loudly, mark it done so completion
+                // detection and resumes don't spin on it forever, and move on.
+                try {
+                    // get the parent of the merge commit
+                    VcsFullCommitDetails mergeParents = getCommitDetails(repo, prMergeCommit);
+                    List<Hash> parents = mergeParents.getParents();
+                    String mergeParentSha = null;
+                    if(!parents.isEmpty()) {
+                        mergeParentSha = parents.get(0).asString();
+                        System.out.println("-> Parent SHA (Base/Left): " + mergeParentSha);
+                    }
 
-                // fail here if merge parent commit is null <--- This shouldn't happen
-                assert mergeParentSha != null;
+                    System.out.println(" -> MergeCommitSha: " + prMergeCommit);
 
-                // Now we construct the left, right and base parent commits
-                // since we are using cherry pick, base commit will the parent of the remote commit you want to cherry-pick
-                String gitHeadCommit =  commit.getId().asString();
+                    // fail here if merge parent commit is null <--- This shouldn't happen
+                    assert mergeParentSha != null;
+
+                    // Now we construct the left, right and base parent commits
+                    // since we are using cherry pick, base commit will the parent of the remote commit you want to cherry-pick
+                    String gitHeadCommit =  commit.getId().asString();
 
 
-                String rightCommit = prMergeCommit;
-                String leftCommit = gitHeadCommit;
-                String baseCommit  = mergeParentSha;
+                    String rightCommit = prMergeCommit;
+                    String leftCommit = gitHeadCommit;
+                    String baseCommit  = mergeParentSha;
 
-                String[] data = {rightCommit, leftCommit, baseCommit, prMergeAuthor, prMergeAuthorEmail, String.valueOf(prTimeStamp)};
+                    String[] data = {rightCommit, leftCommit, baseCommit, prMergeAuthor, prMergeAuthorEmail, String.valueOf(prTimeStamp)};
 
 //                evaluateMergeScenario(values, repo, proj);
-                evaluateMergeScenario(data, repo, proj, patch);
+                    evaluateMergeScenario(data, repo, proj, patch);
+                } catch (Exception e) {
+                    System.out.println("-> SKIP PR " + values[2] + ": scenario failed ("
+                            + e.getMessage() + "); marking done so the run continues");
+                    e.printStackTrace();
+                }
                 patch.setDone();
                 patch.saveIt();
             }
@@ -281,7 +396,12 @@ public class RePatchIntegration {
         // Utils.clearTemp(tempPath + "intelliMerge");
 
         String mergeCommitHash = values[0]; // values[1];
-        MergeCommit mergeCommit = MergeCommit.findFirst("commit_hash = ?", mergeCommitHash);
+        // Scope by project: the same mainline merge commit recurs across
+        // projects (two forks of one mainline evaluate the same PR), and an
+        // unscoped lookup silently skips the second project's scenario as
+        // "already done".
+        MergeCommit mergeCommit = MergeCommit.findFirst("commit_hash = ? and project_id = ?",
+                mergeCommitHash, proj.getId());
         if(mergeCommit != null && mergeCommit.isDone()) {
             return;
         }
@@ -306,9 +426,20 @@ public class RePatchIntegration {
         boolean isConflicting = gitUtils.cherrypick(remoteRepoName, mergeCommitHash);
         System.out.println("-> Is conflicting: " + isConflicting);
         if(!isConflicting) {
-            // This should always be conflicting
-            // Now we are using Git CherryPick
-            //System.out.println("-> Error merging with Git CherryPick");
+            // The patch applies cleanly with plain git cherry-pick, so the
+            // refactoring engine is never exercised. Record the outcome as a
+            // done merge_commit with is_conflicting=0 (and no merge_result
+            // rows) instead of vanishing: the validation study needs an
+            // auditable per-case outcome, and without this row a clean
+            // application is indistinguishable from a failed PR fetch.
+            if (mergeCommit != null) {
+                mergeCommit.delete();
+            }
+            mergeCommit = new MergeCommit(mergeCommitHash, false, leftParent,
+                    rightParent, proj, patch, values[3], values[4], Long.parseLong(values[5]));
+            mergeCommit.saveIt();
+            mergeCommit.setDone();
+            mergeCommit.saveIt();
             return;
         }
         // Set patch's is_conflicting column to true
@@ -341,11 +472,16 @@ public class RePatchIntegration {
 //        String intelliMergePath = resultDir + "/intelliMerge";
 
 
-        // Remove unmerged and non-java files from Git and RePatch results to save space
-        // Use project path
-        EvaluationUtils.removeUnmergedAndNonJavaFiles(project.getBasePath());
-
+        // Remove unmerged and non-java files from Git and RePatch results to
+        // save space — on the evidence COPY, never the live clone. The trim
+        // used to run on the clone before the copy; the clone's *.iml files
+        // are untracked AND gitignored, so reset() could not restore them and
+        // every conflict scenario permanently destroyed the on-disk project
+        // model (the queued JPS reload then applied the resulting empty
+        // module set). The copy is trimmed by the same rule, so evidence
+        // trees are unchanged.
         Utils.saveContent(project, gitMergePath);
+        EvaluationUtils.removeUnmergedAndNonJavaFiles(gitMergePath);
         gitUtils.reset();
 
 
@@ -356,9 +492,18 @@ public class RePatchIntegration {
         Pair<ArrayList<Pair<RefactoringObject, RefactoringObject>>, Long> refMergeConflictsAndRuntime =
                 runRefMerge(project, repo, rightParent, leftParent, baseCommit, mergeCommit, conflictingFiles);
 
-        EvaluationUtils.removeUnmergedAndNonJavaFiles(project.getBasePath());
         Utils.saveContent(project, refMergePath);
+        EvaluationUtils.removeUnmergedAndNonJavaFiles(refMergePath);
         DumbService.getInstance(project).completeJustSubmittedTasks();
+
+        // Validation-study provenance: the trimmed evidence copies above are
+        // Java-only and not buildable, so capture the exact target state
+        // RePatch produced as a git bundle + provenance file while the live
+        // clone still holds it. Timeout scenarios are skipped (their
+        // resultDir is deleted further down).
+        if (refMergeConflictsAndRuntime.getRight() >= 0) {
+            captureResultState(repo, resultDir, leftParent, rightParent, baseCommit, mergeCommitHash);
+        }
 
 
         File refMergeConflictDirectory = new File(resultDir + "/refMergeResults");
@@ -431,15 +576,7 @@ public class RePatchIntegration {
 
             // Add refactoring conflict data to database. One bad row must not
             // abort the whole patch.
-            for (Pair<RefactoringObject, RefactoringObject> pair : refactoringConflicts) {
-                try {
-                    RefactoringConflict refactoringConflict = new RefactoringConflict(pair.getLeft(), pair.getRight(), refMergeResult);
-                    refactoringConflict.saveIt();
-                } catch (Exception e) {
-                    System.out.println("Failed to persist refactoring conflict for patch "
-                            + patch.getNumber() + ": " + e.getMessage());
-                }
-            }
+            RefactoringConflict.persistAll(refactoringConflicts, refMergeResult, patch.getNumber());
         }
 
         // Add Git data to database
@@ -521,6 +658,50 @@ public class RePatchIntegration {
     }
 
     /*
+     * Record the exact target state RePatch produced for this scenario:
+     * commit the working tree on the current HEAD, then export a
+     * leftParent..HEAD bundle plus a provenance file into the scenario's
+     * result directory. Any clone that contains leftParent can reproduce the
+     * state with `git fetch <bundle>` + checkout of result_sha, so the state
+     * survives the per-run clone recreation. Never fails the scenario.
+     */
+    private void captureResultState(GitRepository repo, String resultDir, String leftParent,
+                                    String rightParent, String baseCommit, String mergeCommitHash) {
+        try {
+            File root = new File(repo.getRoot().getPath());
+            new File(resultDir).mkdirs();
+            // Stage everything except IDE metadata; a conflicted cherry-pick
+            // index is resolved by the add, so the commit always succeeds.
+            edu.unlv.cs.evol.repatch.utils.Utils.runSystemCommandInDir(root,
+                    "git", "add", "-A", "--", ".", ":(exclude).idea", ":(exclude)*.iml");
+            edu.unlv.cs.evol.repatch.utils.Utils.runSystemCommandInDir(root,
+                    "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "--allow-empty",
+                    "--no-verify", "-m", "repatch-result " + mergeCommitHash);
+            List<String> head = edu.unlv.cs.evol.repatch.utils.Utils.runSystemCommandInDir(root,
+                    "git", "rev-parse", "HEAD");
+            String resultSha = head.isEmpty() ? "" : head.get(0).trim();
+            edu.unlv.cs.evol.repatch.utils.Utils.runSystemCommandInDir(root,
+                    "git", "bundle", "create", resultDir + "/repatch-state.bundle",
+                    leftParent + "..HEAD");
+            String json = "{\n"
+                    + "  \"merge_commit\": \"" + mergeCommitHash + "\",\n"
+                    + "  \"left_parent\": \"" + leftParent + "\",\n"
+                    + "  \"right_parent\": \"" + rightParent + "\",\n"
+                    + "  \"base_commit\": \"" + baseCommit + "\",\n"
+                    + "  \"result_sha\": \"" + resultSha + "\",\n"
+                    + "  \"bundle\": \"repatch-state.bundle\"\n"
+                    + "}\n";
+            java.nio.file.Files.write(java.nio.file.Paths.get(resultDir, "repatch-state.json"),
+                    json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            System.out.println("-> Captured RePatch result state " + resultSha
+                    + " -> " + resultDir + "/repatch-state.bundle");
+        } catch (Exception e) {
+            System.out.println("-> WARNING: could not capture result state for "
+                    + mergeCommitHash + " (" + e.getMessage() + ")");
+        }
+    }
+
+    /*
      * Merge the left and right parent using RePatch. Return how long it takes for RePatch to finish
      */
     private Pair<ArrayList<Pair<RefactoringObject, RefactoringObject>>, Long> runRefMerge(com.intellij.openapi.project.Project project,
@@ -545,8 +726,9 @@ public class RePatchIntegration {
             e.printStackTrace();
         }
         long time2 = System.currentTimeMillis();
-        // If RePatch times out
-        if(conflicts == null || (time2 - time) > 900000) {
+        // If RePatch times out; same budget as the in-plugin checks so raising
+        // -Drepatch.timeoutMinutes is honored here too.
+        if(conflicts == null || (time2 - time) > Long.getLong("repatch.timeoutMinutes", 15L) * 60_000L) {
             time = -1;
             System.out.println("-> RePatch timed out");
             if(!refactorings.isEmpty()) {
@@ -591,12 +773,10 @@ public class RePatchIntegration {
     /*
      * Clone the given project.
      */
-    private void cloneProject(String path, String url) {
-        System.out.println("TASK: cloning project -> " + url);
-        String projectName = url.substring(url.lastIndexOf("/"));
-        String clonePath = path + projectName;
+    private void cloneProject(File target, String url) {
+        System.out.println("TASK: cloning project -> " + url + " into " + target);
         try {
-            Git.cloneRepository().setURI(url).setDirectory(new File(clonePath)).call();
+            Git.cloneRepository().setURI(url).setDirectory(target).call();
         }
         catch(GitAPIException | JGitInternalException e) {
             e.printStackTrace();
@@ -607,30 +787,72 @@ public class RePatchIntegration {
      * Open the given project.
      */
     private String openProject(String path, String url, String remoteOriginUrl) {
-        String projectName = url.substring(url.lastIndexOf("/"));
+        // Owner-prefixed checkout naming (<Owner>-<RepoName>, e.g.
+        // linkedin-kafka): both directions of the same repository get
+        // distinct clone directories, which repo-name-only naming collides.
+        String dirName = RepoNaming.directoryName(url);
 
         // get the remote repo name - the repo we are cherry-picking from.
-//        String remoteProjectName = remoteOriginUrl.substring(remoteOriginUrl.lastIndexOf("/"));
         String remoteProjectName = remoteOriginUrl.substring(remoteOriginUrl.lastIndexOf("/") + 1);
         remoteRepoName = remoteProjectName;
         System.out.println("-> Remote Repo Name: " + remoteProjectName);
-        File pathToProject = new File(path + projectName);
+        File pathToProject = new File(path, dirName);
 
         try {
             if(!pathToProject.exists()) {
 
-                cloneProject(path, url);
+                cloneProject(pathToProject, url);
                 // add mainLineUrl to the repo we are working with as
                 addRemote(pathToProject, remoteProjectName, remoteOriginUrl);
+            } else if (!new File(pathToProject, ".git").isDirectory()) {
+                throw new IllegalStateException(pathToProject + " exists but is not a git checkout —"
+                        + " delete it and re-run so the pipeline can clone " + url);
+            }
+
+            // A previously opened evaluation project must be closed first:
+            // with a project already open, openOrImport can return that
+            // existing project instead of the requested one, and every
+            // subsequent git call then runs against the previous project's
+            // repository (observed: second project resolved the first
+            // project's clone and failed with "bad object").
+            if (this.project != null && !this.project.isDisposed()) {
+                com.intellij.openapi.project.Project previous = this.project;
+                ApplicationManager.getApplication().invokeAndWait(() ->
+                        com.intellij.openapi.project.ex.ProjectManagerEx.getInstanceEx()
+                                .forceCloseProject(previous, true));
+                this.project = null;
             }
 
             this.project = ProjectUtil.openOrImport(pathToProject.toPath(), null, false);
+            // Without this, the pipeline races the async workspace-model load
+            // and, on losing, runs the whole scenario against a module-less
+            // project (empty indexes, silently no-oped refactorings).
+            edu.unlv.cs.evol.repatch.utils.Utils.waitForProjectModel(this.project);
+            // With the model loaded, freeze it: VFS-event-driven JPS reloads
+            // during checkout churn are what destroyed it mid-run.
+            edu.unlv.cs.evol.repatch.utils.Utils.pinProjectModel(this.project);
+            // The declared project SDK resolves asynchronously; running
+            // ahead of it makes every inversion silently vacuous.
+            edu.unlv.cs.evol.repatch.utils.Utils.waitForProjectSdk(this.project);
 
         }
         catch(Exception e) {
             e.printStackTrace();
         }
-        return projectName;
+        // Fail fast if the platform handed back some other project — running
+        // an evaluation against the wrong repository silently produces
+        // garbage verdicts, which is strictly worse than aborting.
+        try {
+            if (this.project == null || this.project.getBasePath() == null
+                    || !new File(this.project.getBasePath()).getCanonicalFile()
+                            .equals(pathToProject.getCanonicalFile())) {
+                throw new IllegalStateException("openOrImport did not open " + pathToProject
+                        + " (got " + (this.project == null ? "null" : this.project.getBasePath()) + ")");
+            }
+        } catch (IOException ioe) {
+            throw new IllegalStateException("could not validate opened project path", ioe);
+        }
+        return dirName;
 
     }
 

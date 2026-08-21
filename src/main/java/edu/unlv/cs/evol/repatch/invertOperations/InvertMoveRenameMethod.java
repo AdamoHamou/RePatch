@@ -45,11 +45,16 @@ public class InvertMoveRenameMethod {
         }
         // If we cannot find the PSI class, do not try to invert the refactoring
         if(psiClass == null) {
+            System.out.println("-> Invert skip (class not found): "
+                    + (moveRenameMethodObject.isMoveMethod() ? destinationClassName : originalClassName)
+                    + " in " + filePath);
             return;
         }
         VirtualFile vFile = psiClass.getContainingFile().getVirtualFile();
         PsiMethod psiMethod = Utils.getPsiMethod(psiClass, refactored);
         if(psiMethod == null) {
+            System.out.println("-> Invert skip (method signature not found): "
+                    + refactored.getName() + " in " + psiClass.getQualifiedName());
             return;
         }
 
@@ -57,10 +62,11 @@ public class InvertMoveRenameMethod {
         // to the original operation
         if(moveRenameMethodObject.isRenameMethod()) {
             RefactoringFactory factory = JavaRefactoringFactory.getInstance(project);
-            RenameRefactoring renameRefactoring = factory.createRename(psiMethod, originalMethodName, true, true);
+            RenameRefactoring renameRefactoring = factory.createRename(psiMethod, originalMethodName, false, false);
             UsageInfo[] refactoringUsages = renameRefactoring.findUsages();
             renameRefactoring.doRefactoring(refactoringUsages);
-
+            System.out.println("-> Inverted rename: " + refactored.getName() + " -> " + originalMethodName
+                    + " (" + refactoringUsages.length + " usages)");
         }
         // If the operation was moved, undo the move method by performing a move method refactoring to move it to the
         // original class

@@ -54,6 +54,31 @@ public class MoveRenameMethodObject implements RefactoringObject {
     }
 
     /*
+     * Use the provided information to create a method refactoring object of an explicit type
+     * (RENAME_METHOD, MOVE_OPERATION, or MOVE_AND_RENAME_OPERATION) for testing. The RefMiner
+     * constructor below is the only other way to obtain a move-typed object, and it requires a
+     * live RefMiner refactoring.
+     */
+    public MoveRenameMethodObject(RefactoringType refactoringType, String refactoringDetail,
+                                  String originalFilePath, String originalClassName, MethodSignatureObject originalMethodSignature,
+                                  String destinationFilePath, String destinationClassName, MethodSignatureObject destinationMethodSignature) {
+        this.refactoringType = refactoringType;
+        this.refactoringDetail = refactoringDetail;
+        this.originalFilePath = originalFilePath;
+        this.originalClassName = originalClassName;
+        this.originalMethodSignature = originalMethodSignature;
+        this.destinationFilePath = destinationFilePath;
+        this.destinationClassName = destinationClassName;
+        this.destinationMethodSignature = destinationMethodSignature;
+        this.originalDestinationClassName = destinationClassName;
+        setType(refactoringType);
+        this.isReplay = true;
+        this.startLine = 0;
+        this.endLine = 0;
+
+    }
+
+    /*
      * Creates the rename method object and takes the information that we need from the RefMiner refactoring object.
      */
     public MoveRenameMethodObject(Refactoring refactoring) {

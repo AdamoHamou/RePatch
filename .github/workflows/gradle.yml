@@ -1,26 +1,59 @@
-# This workflow will build a Java project with Gradle
-# For more information see: https://help.github.com/actions/language-and-framework-guides/building-and-testing-java-with-gradle
+# Builds the plugin against the IntelliJ 2024 platform (JDK 17) and runs the
+# refactoring-conflict persistence check against a throwaway MySQL service.
+# runIde-based integration runs are out of scope for CI: they need cloned
+# evaluation repositories and ~15 minutes of IDE runtime per patch.
 
 name: Java CI with Gradle
 
 on:
   push:
-    branches: [ master ]
+    branches: [ main, 'upgrade-2.0/**', 'migration/**' ]
   pull_request:
-    branches: [ master ]
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h127.0.0.1 -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
     steps:
-    - uses: actions/checkout@v2
-    - name: Set up JDK 11
-      uses: actions/setup-java@v1
+    - uses: actions/checkout@v4
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
       with:
-        java-version: 11
+        distribution: temurin
+        java-version: 17
+
+    - name: Set up Gradle (dependency + IDE distribution caching)
+      uses: gradle/actions/setup-gradle@v4
+
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
+
     - name: Build with Gradle
       run: ./gradlew build
+
+    - name: Load integration schema
+      run: mysql -h127.0.0.1 -uroot -proot < src/main/resources/create_integration_schema.sql
+
+    - name: Refactoring-conflict persistence check
+      env:
+        JDBC_URL: jdbc:mysql://127.0.0.1:3306/refactoring_aware_integration_repatch?serverTimezone=UTC
+        JDBC_URL_WITHOUT_DATABASE: jdbc:mysql://127.0.0.1:3306?serverTimezone=UTC
+        JDBC_USER: root
+        JDBC_PASSWORD: root
+      run: ./gradlew refactoringConflictPersistenceCheck

@@ -16,7 +16,9 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class GitUtils {
@@ -48,8 +50,99 @@ public class GitUtils {
      * Perform git add -A and git commit
      */
     public String addAndCommit() {
+        List<String> dirty = Utils.runSystemCommandInDir(new File(repo.getRoot().getPath()),
+                "git", "status", "--porcelain");
+        System.out.println("-> addAndCommit: " + dirty.size() + " dirty paths on disk before add"
+                + (dirty.isEmpty() ? "" : " (first: " + dirty.get(0).trim() + ")"));
         add();
-        return commit();
+        commit();
+        // The returned SHA must be exact: when the inversions changed nothing,
+        // `git commit` commits nothing and HEAD stays at the checked-out
+        // commit. rev-parse HEAD is correct in both cases, unlike the
+        // porcelain-output substring parsing inside DoGitCommit (B5).
+        List<String> out = Utils.runSystemCommandInDir(new File(repo.getRoot().getPath()),
+                "git", "rev-parse", "HEAD");
+        return out.isEmpty() ? null : out.get(0).trim();
+    }
+
+    /*
+     * Re-parent the given commit's tree onto the cherry-pick base. The undo
+     * commit is created on top of the right commit, so cherry-picking it
+     * directly applies only the inversion diff and silently drops the rest of
+     * the patch content. Applying tree(undo) relative to the base restores
+     * real cherry-pick semantics: full patch content minus the inverted
+     * refactorings. When inversion changed nothing, tree(undo) == tree(right)
+     * and this equals cherry-picking the patch itself.
+     */
+    public String reparentOntoBase(String commitSha, String baseSha) {
+        List<String> out = Utils.runSystemCommandInDir(new File(repo.getRoot().getPath()),
+                "git", "commit-tree", commitSha + "^{tree}", "-p", baseSha,
+                "-m", "RePatch undo rebased onto cherry-pick base");
+        if (out.isEmpty() || out.get(0).trim().length() != 40) {
+            System.out.println("-> commit-tree failed for " + commitSha + ": " + out);
+            return null;
+        }
+        return out.get(0).trim();
+    }
+
+    /*
+     * Guardrail against inversion over-reach: an IDE rename whose PSI
+     * resolution reaches beyond the refactored element can edit files the
+     * patch never touched, and those edits ride the undo commit into the
+     * cherry-pick as spurious conflicts (e.g. a rename inversion rewriting
+     * 380+ files). Before the undo tree is committed, restore every working
+     * tree change that is outside the patch's own footprint
+     * (git diff --name-only base..right). Returns the number of paths
+     * restored or removed.
+     */
+    public int restoreFilesOutsideFootprint(String baseSha, String rightSha) {
+        File root = new File(repo.getRoot().getPath());
+        Set<String> footprint = new HashSet<>();
+        for (String path : Utils.runSystemCommandInDir(root,
+                "git", "diff", "--name-only", baseSha, rightSha)) {
+            if (!path.trim().isEmpty()) {
+                footprint.add(path.trim());
+            }
+        }
+        int restored = 0;
+        for (String line : Utils.runSystemCommandInDir(root, "git", "status", "--porcelain")) {
+            if (line.length() < 4) {
+                continue;
+            }
+            String status = line.substring(0, 2);
+            String path = line.substring(3).trim();
+            if (path.isEmpty() || footprint.contains(path)) {
+                continue;
+            }
+            if (status.equals("??")) {
+                // Created by the inversion, absent at the right commit: the
+                // later `git add -A` would fold it into the undo tree.
+                Utils.runSystemCommandInDir(root, "git", "clean", "-f", "--", path);
+                System.out.println("-> Removed out-of-footprint inversion file: " + path);
+            } else {
+                Utils.runSystemCommandInDir(root, "git", "checkout", "--", path);
+                System.out.println("-> Restored out-of-footprint inversion edit: " + path);
+            }
+            restored++;
+        }
+        if (restored > 0) {
+            Utils.refreshVFS();
+        }
+        return restored;
+    }
+
+    /*
+     * True when both revisions resolve to the same tree object. Used to
+     * detect vacuous inversions: the undo commit's tree matching the right
+     * commit's tree means the inversion machinery edited nothing at all.
+     */
+    public boolean sameTree(String shaA, String shaB) {
+        File root = new File(repo.getRoot().getPath());
+        List<String> a = Utils.runSystemCommandInDir(root, "git", "rev-parse", shaA + "^{tree}");
+        List<String> b = Utils.runSystemCommandInDir(root, "git", "rev-parse", shaB + "^{tree}");
+        return !a.isEmpty() && !b.isEmpty()
+                && a.get(0).trim().length() == 40
+                && a.get(0).trim().equals(b.get(0).trim());
     }
 
     public void add() {
@@ -253,6 +346,12 @@ class DoGitCommit implements Runnable {
         // Add message to commit to clearly show it's RePatch step
         lineHandler.addParameters("-m", "RePatch");
         GitCommandResult result = Git.getInstance().runCommand(lineHandler);
+        if (result.getOutput().isEmpty()) {
+            // nothing-to-commit (e.g. a vacuous undo): no output line to
+            // parse — leave commit null instead of dying on get(0)
+            System.out.println("-> DoGitCommit: no output from git commit (nothing to commit?)");
+            return;
+        }
         String res = result.getOutput().get(0);
         // get the commit hash from the output message
         String commit;

@@ -49,6 +49,9 @@ out/
 ##############################
 .settings/
 bin/
+# ... but the container CLI scripts are sources, not build output
+!containers/bin/
+!containers/bin/**
 tmp/
 .metadata
 .classpath
@@ -283,3 +286,6 @@ cython_debug/
 
 .intellijPlatform/
 .prerun_*
+
+# Real GitHub token (template is committed instead)
+src/main/resources/github-oauth.properties

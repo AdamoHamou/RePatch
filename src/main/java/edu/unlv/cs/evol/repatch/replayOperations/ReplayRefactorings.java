@@ -1,6 +1,7 @@
 package edu.unlv.cs.evol.repatch.replayOperations;
 
 import edu.unlv.cs.evol.repatch.refactoringObjects.RefactoringObject;
+import edu.unlv.cs.evol.repatch.utils.Utils;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.Project;
 
@@ -12,7 +13,15 @@ public class ReplayRefactorings {
      * replayRefactorings takes a list of refactorings and performs each of the refactorings.
      */
     public static void replayRefactorings(ArrayList<RefactoringObject> refactoringObjects, Project project) {
+        // PSI lookups below die with IndexNotReadyException if indexing
+        // restarted since the last wait (e.g. after the cherry-pick's VFS
+        // refresh); make sure the index is ready and the workspace roots
+        // have stopped moving at phase entry.
+        Utils.waitForWorkspaceSettle(project);
         for(RefactoringObject refactoringObject : refactoringObjects) {
+            System.out.println("-> Replaying " + refactoringObject.getRefactoringType()
+                    + " (" + refactoringObject.getOriginalFilePath()
+                    + " -> " + refactoringObject.getDestinationFilePath() + ")");
             switch (refactoringObject.getRefactoringType()) {
                 case RENAME_CLASS:
                 case MOVE_CLASS:
@@ -109,6 +118,10 @@ public class ReplayRefactorings {
                     }
                     break;
             }
+            // Each replay's edits must be committed and indexed before the
+            // next replay's findUsages runs, or usages are missed
+            // nondeterministically.
+            Utils.settleAfterPsiEdit(project);
 
         }
 

@@ -79,16 +79,24 @@ public class GitHubUtils {
 
         try (InputStream input = getClass().getClassLoader().getResourceAsStream("github-oauth.properties")) {
             Properties prop = new Properties();
-            if (input != null) {
+            if (input == null) {
+                logWarn("github-oauth.properties not found on the classpath "
+                        + "(copy src/main/resources/github-oauth.properties.template and add your token); "
+                        + "falling back to anonymous GitHub access with its lower rate limit.");
+            } else {
                 prop.load(input);
                 String oAuthToken = prop.getProperty("OAuthToken");
-                if (oAuthToken != null && !oAuthToken.isBlank()) {
+                if (oAuthToken != null && !oAuthToken.isBlank()
+                        && !oAuthToken.startsWith("your_oauth_token")) {
                     gitHub = GitHub.connectUsingOAuth(oAuthToken);
                     if (gitHub.isCredentialValid()) {
                         logInfo("Connected to GitHub with OAuth token.");
                     } else {
                         logWarn("GitHub credentials are invalid.");
                     }
+                } else {
+                    logWarn("github-oauth.properties has no usable OAuthToken; "
+                            + "falling back to anonymous GitHub access with its lower rate limit.");
                 }
             }
 

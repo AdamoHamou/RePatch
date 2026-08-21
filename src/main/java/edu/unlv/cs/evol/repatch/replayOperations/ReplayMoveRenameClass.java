@@ -46,7 +46,7 @@ public class ReplayMoveRenameClass {
         if(moveRenameClassObject.isRenameMethod()) {
 
             RefactoringFactory factory = JavaRefactoringFactory.getInstance(project);
-            RenameRefactoring renameRefactoring = factory.createRename(psiClass, destClassName, true, true);
+            RenameRefactoring renameRefactoring = factory.createRename(psiClass, destClassName, false, false);
             UsageInfo[] refactoringUsages = renameRefactoring.findUsages();
             renameRefactoring.doRefactoring(refactoringUsages);
         }

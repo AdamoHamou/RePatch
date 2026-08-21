@@ -56,12 +56,19 @@ dependencies {
     intellijPlatform {
         intellijIdeaCommunity '2024.3.7'
         bundledPlugins 'Git4Idea', 'com.intellij.java'
+        // Headless PSI test fixtures (SPEC-12b round-trip tests).
+        testFramework org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform.INSTANCE
+        testFramework org.jetbrains.intellij.platform.gradle.TestFrameworkType.Plugin.Java.INSTANCE
     }
 
     implementation fileTree(dir: 'lib', include: ['*.jar'])
     // `compile` removed in Gradle 7+: replaced with `implementation`.
     implementation group: 'org.eclipse.jgit', name: 'org.eclipse.jgit', version: '5.10.0.202012080955-r'
-    implementation group: 'com.github.tsantalis', name: 'refactoring-miner', version: '2.1.0'
+    // transitive=false reproduces the locally validated classpath: the local
+    // artifact was hand-installed with a flat POM (zero dependencies), while
+    // Maven Central's POM declares six transitives (jgit among them) that would
+    // override the pinned versions above on a clean machine/CI.
+    implementation(group: 'com.github.tsantalis', name: 'refactoring-miner', version: '2.1.0') { transitive = false }
     implementation 'com.google.googlejavaformat:google-java-format:1.7'
     implementation group: 'io.reflectoring.diffparser', name: 'diffparser', version: '1.4'
     implementation 'org.eclipse.jdt:org.eclipse.jdt.core:3.24.0'
@@ -95,8 +102,42 @@ intellijPlatform {
 }
 
 
+// Verifies a detected refactoring conflict persists to refactoring_conflict.
+// Needs JDBC_URL/JDBC_USER/JDBC_PASSWORD pointing at a schema-bootstrapped DB.
+tasks.register('refactoringConflictPersistenceCheck', JavaExec) {
+    group = 'verification'
+    description = 'Persist a constructed source<->target refactoring conflict and read it back'
+    mainClass = 'edu.unlv.cs.evol.integration.database.RefactoringConflictPersistenceCheck'
+    classpath = sourceSets.main.runtimeClasspath
+}
+
 tasks.named('runIde').configure {
     jvmArgs '-Djava.awt.headless=true', '-Xss100m', '-Xmx16g'
+    // The evaluation clone carries a committed JPS module model (gradle idea).
+    // Left alone, the IDE's Gradle auto-import asynchronously REPLACES it
+    // mid-run (43 JPS modules -> 183 Gradle modules), and that swap can be
+    // caught in flight or fail outright, leaving the project module-less:
+    // empty indexes, silently no-oped inversions, nondeterministic verdicts.
+    // Pin the deterministic JPS model by disabling auto-import.
+    jvmArgs '-Dexternal.system.auto.import.disabled=true'
+    // Forward all -Drepatch.* system properties from the gradle build JVM to
+    // the forked sandbox IDE JVM, where the plugin reads them. Without this,
+    // runtime flags (repatch.scopeDetection, repatch.timeoutMinutes,
+    // repatch.refMinerTimeoutMinutes, repatch.abortOnInvertFailure) only ever
+    // reach the gradle daemon and the plugin sees defaults.
+    // Boolean flags must be passed with an explicit value (=true).
+    System.getProperties().each { k, v ->
+        String key = k.toString()
+        if (key.startsWith('repatch.')) {
+            jvmArgs("-D${key}=${v}")
+        }
+    }
+    // Dataset selector (SPEC-11): -PdataSet=sample|complete picks which
+    // resource directory (sample_data / complete_data) the pipeline reads.
+    // Exposed to the plugin as repatch.dataSet; defaults to sample.
+    if (project.hasProperty('dataSet')) {
+        jvmArgs("-Drepatch.dataSet=${project.findProperty('dataSet')}")
+    }
     if (project.hasProperty("mode")) {
         Object x = project.findProperty("mode")
         Object y = project.findProperty("dataPath")

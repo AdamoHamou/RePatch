@@ -633,6 +633,14 @@ public class EvaluationUtils {
      * Remove all non-java files to save space.
      */
     public static void removeUnmergedAndNonJavaFiles(String path) {
+        // The dot-directory guard in removeNonJavaFiles keeps .git, so every
+        // evidence tree used to carry a full copy of the clone's object
+        // database (~350 MB of the ~390 MB per tree — ~130 GB over a full
+        // 477-scenario run). The evidence trees are working-tree snapshots;
+        // reproduction provenance lives in repatch-state.bundle. Only ever
+        // called on the evidence COPIES, never the live clone.
+        edu.unlv.cs.evol.repatch.utils.Utils.runSystemCommandInDir(
+                new File(path), "rm", "-rf", path + "/.git");
         removeNonJavaFiles(path);
     }
 

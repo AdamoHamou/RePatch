@@ -1,0 +1,39 @@
+# RePatch 2.0 — all-in-one interactive container.
+#
+#   docker compose build
+#   docker compose run --rm headless            # interactive shell
+#   docker compose run --rm headless repatch run 16954
+#
+# MySQL runs inside the same container; its datadir, the kafka clone,
+# and the dependency caches live in the repatch-data volume, so runs
+# and their databases persist across sessions.
+services:
+  headless:
+    build:
+      context: ..
+      dockerfile: containers/Dockerfile
+    image: repatch-headless
+    stdin_open: true
+    tty: true
+    environment:
+      RP_DB: ${RP_DB:-}
+      RP_KEEP_DB: ${RP_KEEP_DB:-}
+      RP_DATASET: ${RP_DATASET:-}
+      RP_PRS: ${RP_PRS:-}
+      RP_TIMEOUT: ${RP_TIMEOUT:-}
+      RP_GOLDEN_CHECK: ${RP_GOLDEN_CHECK:-}
+      RP_FORK_URL: ${RP_FORK_URL:-}
+      RP_MAINLINE_URL: ${RP_MAINLINE_URL:-}
+      RP_GITHUB_TOKEN: ${RP_GITHUB_TOKEN:-}
+    volumes:
+      - repatch-data:/home/repatch/data
+      - results:/home/repatch/results
+      # drop scenario CSV files in containers/import/ on the host and run
+      # `repatch <db> myfile.csv` inside
+      - ./import:/home/repatch/import
+    mem_limit: 10g
+    shm_size: 1g
+
+volumes:
+  repatch-data:
+  results:

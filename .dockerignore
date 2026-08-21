@@ -1,0 +1,17 @@
+# Keep the image build context lean: the container needs the sources and
+# resources, not local build state, IDE sandboxes, or git history.
+.git
+.gradle
+build
+out
+.intellijPlatform
+.idea
+*.iml
+iso-runs
+# The build reads these from disk; keeping them out of the context means
+# editing them does not invalidate the baked dependency layers.
+containers/Dockerfile
+containers/docker-compose.yml
+containers/README.md
+**/__pycache__
+*.pyc

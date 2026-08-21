@@ -20,7 +20,15 @@ public class RenameParameterObject implements RefactoringObject {
     private ParameterObject refactoredParameterObject;
     private String originalFilePath;
     private String refactoredFilePath;
-    private Boolean isReplay;
+    // Replay by default, like every other replay-capable refactoring type; the
+    // receiver disables it only on a detected parameter-naming conflict.
+    private boolean isReplay = true;
+    // Boundaries of the containing method (set by Utils.setBoundaries) so
+    // conflicting-file pruning can keep rename-parameters whose method does
+    // not overlap a conflict region. A parameter's usages are method-local,
+    // so the method's range bounds the replay's edit surface.
+    private int startLine;
+    private int endLine;
 
     public RenameParameterObject(String originalClassName, String refactoredClassName,
                                  MethodSignatureObject originalMethodSignature, MethodSignatureObject destinationMethodSignature,
@@ -59,27 +67,27 @@ public class RenameParameterObject implements RefactoringObject {
         this.refactoredFilePath = refactoredOperation.getLocationInfo().getFilePath();
         this.originalParameterObject = new ParameterObject(originalParameterType, originalParameterName);
         this.refactoredParameterObject = new ParameterObject(refactoredParameterType, refactoredParameterName);
-        this.isReplay = false;
+        this.isReplay = true;
     }
 
     @Override
     public void setStartLine(int startLine) {
-
+        this.startLine = startLine;
     }
 
     @Override
     public void setEndLine(int endLine) {
-
+        this.endLine = endLine;
     }
 
     @Override
     public int getStartLine() {
-        return 0;
+        return startLine;
     }
 
     @Override
     public int getEndLine() {
-        return 0;
+        return endLine;
     }
 
     @Override

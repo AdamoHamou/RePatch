@@ -1,0 +1,268 @@
+#!/usr/bin/env bash
+#
+# RePatch container CLI — the interactive front door to the evaluation
+# pipeline. Run `repatch help` for the command list.
+set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/repatch-lib.sh"
+
+# Resolve which run database a browsing command should look at:
+# explicit argument wins, else the most recent run.
+resolve_db() {
+  local db="${1:-}"
+  if [ -z "$db" ] && [ -f "$LAST_RUN_FILE" ]; then
+    db=$(cat "$LAST_RUN_FILE")
+  fi
+  [ -n "$db" ] || { log "no run database yet — do a 'repatch run' first"; return 1; }
+  echo "$db"
+}
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+  run)
+    PRS=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --dataset)      RP_DATASET="$2"; shift 2 ;;
+        --db)           RP_DB="$2"; shift 2 ;;
+        --keep-db)      RP_KEEP_DB=1; shift ;;
+        --timeout)      RP_TIMEOUT="$2"; shift 2 ;;
+        --golden-check) RP_GOLDEN_CHECK=1; shift ;;
+        --fork)         RP_FORK_URL="$2"; shift 2 ;;
+        --mainline)     RP_MAINLINE_URL="$2"; shift 2 ;;
+        --token)        RP_GITHUB_TOKEN="$2"; shift 2 ;;
+        -*)             log "unknown flag: $1 (see 'repatch help')"; exit 2 ;;
+        *)
+          # PR numbers, space- and/or comma-separated
+          for p in ${1//,/ }; do
+            [[ "$p" =~ ^[0-9]+$ ]] || { log "not a PR number: $p"; exit 2; }
+            PRS+=("$p")
+          done
+          shift ;;
+      esac
+    done
+    if [ ${#PRS[@]} -gt 0 ]; then
+      RP_PRS=$(IFS=,; echo "${PRS[*]}")
+    fi
+    start_mysql || exit $?
+    run_pipeline
+    exit $?
+    ;;
+
+  verdicts)
+    db=$(resolve_db "${1:-}") || exit 1
+    start_mysql || exit $?
+    print_verdicts "$db"
+    ;;
+
+  runs)
+    start_mysql || exit $?
+    printf "%-45s %s\n" "DATABASE" "PATCHES DONE"
+    for db in $("${MY[@]}" -N -e "SHOW DATABASES LIKE 'repatch%'" 2>/dev/null); do
+      done_n=$("${MY[@]}" -N -e "SELECT CONCAT(SUM(is_done=1),'/',COUNT(*)) FROM patch" "$db" 2>/dev/null)
+      printf "%-45s %s\n" "$db" "${done_n:-–}"
+    done
+    ;;
+
+  log)
+    db=$(resolve_db "${1:-}") || exit 1
+    f="$RESULTS/run-$db.log"
+    [ -f "$f" ] || { log "no log at $f"; exit 1; }
+    if [ -t 1 ]; then less "$f"; else cat "$f"; fi
+    ;;
+
+  results)
+    # repatch results [PR] [db] — result trees are written per
+    # merge_commit id ("commitN" = that row's id in the run database),
+    # so map the PR number through the database.
+    pr="${1:-}"
+    if [ -z "$pr" ]; then
+      log "contents of $RESULTS:"
+      ls -lh "$RESULTS" 2>/dev/null
+      exit 0
+    fi
+    [[ "$pr" =~ ^[0-9]+$ ]] || { log "not a PR number: $pr"; exit 2; }
+    db=$(resolve_db "${2:-}") || exit 1
+    start_mysql || exit $?
+    # Trees live under the owner-prefixed checkout dir name
+    # (<Owner>-<RepoName>, from the project's fork URL).
+    rows=$("${MY[@]}" -N -e "
+      SELECT CONCAT(SUBSTRING_INDEX(pj.fork_url,'/',-2), '/', mc.id)
+      FROM merge_commit mc
+      JOIN patch p ON mc.patch_id = p.id AND mc.project_id = p.project_id
+      JOIN project pj ON p.project_id = pj.id
+      WHERE p.number = $pr" "$db" 2>/dev/null | tr '/' ' ')
+    if [ -z "$rows" ]; then
+      log "PR $pr has no merge_commit rows in $db (clean cherry-pick, or not in that run)"
+      exit 1
+    fi
+    hit=0
+    while read -r owner repo id; do
+      [ -n "$id" ] || continue
+      d="$RESULTS/$owner-$repo/commit$id"
+      if [ -d "$d" ]; then
+        hit=1
+        echo "$d"
+        find "$d" -maxdepth 1 -mindepth 1 | sed 's/^/  /'
+      fi
+    done <<< "$rows"
+    if [ "$hit" = 1 ]; then
+      echo
+      log "each tree is the merged working copy that run produced;"
+      log "conflict markers (<<<<<<<) are left in place where merges conflicted."
+      log "repatch-state.bundle + repatch-state.json hold the full RePatch-"
+      log "produced target state (evidence trees are trimmed to Java files)."
+      log "NOTE: trees are keyed by merge_commit id within a run database —"
+      log "a later run reusing the same id overwrites them."
+    else
+      log "PR $pr maps to merge_commit row(s) in $db, but no tree exists under $RESULTS"
+      log "(the trees were overwritten by a later run)"
+    fi
+    ;;
+
+  validate)
+    # Validation study (levels 2-3): build + test the baseline target and
+    # the RePatch-produced target state for every conflict-free case.
+    db="" ; VARGS=() ; RECORDS_ONLY=0 ; STATUS_ONLY=0
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --db)           db="$2"; shift 2 ;;
+        --records)      RECORDS_ONLY=1; shift ;;
+        --status)       STATUS_ONLY=1; shift ;;
+        --prs)          VARGS+=(--prs "$2"); shift 2 ;;
+        --cases)        VARGS+=(--cases "$2"); shift 2 ;;
+        --test-scope)   VARGS+=(--test-scope "$2"); shift 2 ;;
+        --jdk)          VARGS+=(--jdk "$2"); shift 2 ;;
+        --limit)        VARGS+=(--limit "$2"); shift 2 ;;
+        --redo)         VARGS+=(--redo); shift ;;
+        *)              log "unknown flag: $1 (see 'repatch help')"; exit 2 ;;
+      esac
+    done
+    db=$(resolve_db "$db") || exit 1
+    OUT="$RESULTS/validation/$db"
+    export DATA RESULTS TEMPLATE CLONE_PARENT DB_HOST JDBC_USER JDBC_PASSWORD
+    if [ "$STATUS_ONLY" = 1 ]; then
+      python3 "$HOME/bin/repatch-validate.py" status --out "$OUT"
+      exit $?
+    fi
+    start_mysql || exit $?
+    python3 "$HOME/bin/repatch-validate.py" records --db "$db" --out "$OUT" || exit $?
+    [ "$RECORDS_ONLY" = 1 ] && { log "dataset refreshed: $OUT/dataset.jsonl"; exit 0; }
+    python3 "$HOME/bin/repatch-validate.py" validate --db "$db" --out "$OUT" "${VARGS[@]}"
+    exit $?
+    ;;
+
+  report)
+    # Generate the study's tables/figures/summary from the dataset.
+    db=$(resolve_db "${1:-}") || exit 1
+    python3 "$RP/validation/analyze.py" "$RESULTS/validation/$db"
+    ;;
+
+  sql)
+    start_mysql || exit $?
+    exec "${MY[@]}" "$@"
+    ;;
+
+  status)
+    echo "-- MySQL:"
+    if mysql_up; then
+      echo "   up ($DB_HOST, datadir $MYSQL_DATA)"
+    else
+      echo "   down (starts automatically with any repatch command)"
+    fi
+    echo "-- Evaluation template:"
+    if [ -d "$TEMPLATE/.git" ]; then
+      imls=$(find "$TEMPLATE" -name '*.iml' -not -path '*/.git/*' 2>/dev/null | wc -l)
+      echo "   provisioned: HEAD=$(git -C "$TEMPLATE" rev-parse --short HEAD), $imls module files"
+    else
+      echo "   not yet provisioned (first 'repatch run' clones ~500 MB)"
+    fi
+    echo "-- Volumes:"
+    du -sh "$DATA" "$RESULTS" 2>/dev/null | sed 's/^/   /'
+    if mysql_up; then
+      n=$("${MY[@]}" -N -e "SHOW DATABASES LIKE 'repatch%'" 2>/dev/null | wc -l)
+      echo "-- Run databases: $n (list with 'repatch runs')"
+    fi
+    ;;
+
+  help|--help|-h)
+    banner
+    ;;
+
+  token)
+    # repatch token            interactive prompt (input hidden)
+    # repatch token --status   is one configured?
+    # repatch token --clear    forget the saved token
+    # repatch token <value>    non-interactive set
+    case "${1:-}" in
+      --status) token_status; exit $? ;;
+      --clear)  rm -f "$TOKEN_FILE"; log "saved token removed"; exit 0 ;;
+      "")       prompt_token; exit $? ;;
+      -*)       log "unknown flag: $1"; exit 2 ;;
+      *)        save_token "$1"; log "token saved"; token_status; exit 0 ;;
+    esac
+    ;;
+
+  *)
+    # Custom run:  repatch <db> <source> <target> <pr>
+    #              repatch <db> <file.csv>
+    # <db> is any label (letters/digits/_); the run database is repatch_<db>.
+    if [[ "$cmd" == -* ]] || [ $# -lt 1 ]; then
+      log "unknown command: $cmd"
+      banner
+      exit 2
+    fi
+    db=$(db_name_for "$cmd") || exit 2
+    DRY=0; POS=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --dry-run)  DRY=1; shift ;;
+        --keep-db)  RP_KEEP_DB=1; shift ;;
+        --timeout)  RP_TIMEOUT="$2"; shift 2 ;;
+        --token)    RP_GITHUB_TOKEN="$2"; shift 2 ;;
+        -*)         log "unknown flag: $1 (see 'repatch help')"; exit 2 ;;
+        *)          POS+=("$1"); shift ;;
+      esac
+    done
+    mkdir -p "$SCENARIOS"
+    SCEN="$SCENARIOS/$db.txt"
+    if [ ${#POS[@]} -eq 1 ]; then
+      # CSV: as given, else under the import mount, else under results.
+      csv=""
+      for cand in "${POS[0]}" "$IMPORT/${POS[0]}" "$RESULTS/${POS[0]}"; do
+        [ -f "$cand" ] && { csv="$cand"; break; }
+      done
+      if [ -z "$csv" ]; then
+        log "file not found: ${POS[0]}"
+        log "copy it into the container first, e.g. on the host:"
+        log "  docker cp ${POS[0]} <container>:/home/repatch/import/"
+        log "or start the container with -v /path/to/your/dir:/home/repatch/import"
+        log "files currently in $IMPORT:"
+        ls -1 "$IMPORT" 2>/dev/null | sed 's/^/  /' || true
+        exit 2
+      fi
+      n=$(parse_scenarios "$csv" "$SCEN") || exit $?
+      log "parsed $n scenario(s) from $csv"
+    elif [ ${#POS[@]} -eq 3 ]; then
+      src="${POS[0]}"; tgt="${POS[1]}"; pr="${POS[2]}"
+      [[ "$pr" =~ ^[0-9]+$ ]] || { log "usage: repatch <db> <source> <target> <pr-number>  (pr '$pr' is not a number)"; exit 2; }
+      su=$(normalize_repo_url "$src") || { log "bad source repo '$src' (expected owner/repo)"; exit 2; }
+      tu=$(normalize_repo_url "$tgt") || { log "bad target repo '$tgt' (expected owner/repo)"; exit 2; }
+      echo "$su,$tu,$pr,MO" > "$SCEN"
+    else
+      log "usage: repatch <db> <source> <target> <pr>   |   repatch <db> <file.csv>"
+      exit 2
+    fi
+    log "run database: $db"
+    describe_scenarios "$SCEN"
+    token_status || true
+    if [ "$DRY" = 1 ]; then
+      log "dry run — nothing launched (scenario list: $SCEN)"
+      exit 0
+    fi
+    start_mysql || exit $?
+    RP_DB="$db" RP_SCENARIO_FILE="$SCEN" run_pipeline
+    exit $?
+    ;;
+esac
